@@ -13,9 +13,9 @@ cv2.resizeWindow("Settings", 300, 250)
 
 cv2.createTrackbar("H Min", "Settings", 100, 179, empty)
 cv2.createTrackbar("H Max", "Settings", 140, 179, empty)
-cv2.createTrackbar("S Min", "Settings", 120, 255, empty)
+cv2.createTrackbar("S Min", "Settings", 90, 255, empty)
 cv2.createTrackbar("S Max", "Settings", 255, 255, empty)
-cv2.createTrackbar("V Min", "Settings", 255, 255, empty)
+cv2.createTrackbar("V Min", "Settings", 50, 255, empty)
 cv2.createTrackbar("V Max", "Settings", 255, 255, empty)
     
 
@@ -25,7 +25,6 @@ cv2.createTrackbar("V Max", "Settings", 255, 255, empty)
 while True:
     ret, frame = cap.read()
     frame = cv2.flip(frame, 1)
-    frame = cv2.resize(frame, (320, 240))
 
 
     if not ret:
@@ -45,7 +44,6 @@ while True:
     v_min = cv2.getTrackbarPos("V Min", "Settings")
     v_max = cv2.getTrackbarPos("V Max", "Settings")    
 
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
     #h, s, v = cv2.split(hsv)
 
@@ -56,24 +54,39 @@ while True:
 
     #hsv_new = cv2.merge([h, s, v_balanced])
 
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
     lower_blue = np.array([h_min, s_min, v_min]) 
     upper_blue = np.array([h_max, s_max, v_max])
     mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
 
+    kernel = np.ones((5,5), np.uint8)
+    mask_blue = cv2.erode(mask_blue, kernel, iterations=2)
+
+    mask = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
+
+    
     lower_red1 = np.array([0, s_min, v_min])
     upper_red1 = np.array([10, s_max, v_max])
     mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
+
+    mask_red1 = cv2.erode(mask_red1, kernel, iterations=2)
 
     lower_red2 = np.array([170, s_min, v_min])
     upper_red2 = np.array([180, s_max, v_max])
     mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
 
+    mask_red2 = cv2.erode(mask_red2, kernel, iterations=2)
+
     mask_red_total = cv2.bitwise_or(mask_red1, mask_red2)
+
     mask = cv2.bitwise_or(mask_blue, mask_red_total)
+    
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    # cv2.drawContours(frame, contours, -1, (0, 255, 0), 2)     
+   
     
 
 
@@ -93,7 +106,16 @@ while True:
             
             aspectRatio = float(w) / h
 
-
+            M = cv2.moments(cnt)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                
+                # Merkeze bir nokta ve koordinatları yazalım
+                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+                cv2.putText(frame, f"X: {cx} Y: {cy}", (x, y + h + 20), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                
             cv2.drawContours(frame, [approx], -1, (0, 0, 255), 2)
 
 
