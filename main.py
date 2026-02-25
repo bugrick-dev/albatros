@@ -1,9 +1,16 @@
+from picamera2 import Picamera2
 import cv2
 import numpy as np
 
 def empty (a):
     pass
 
+
+picam2 = Picamera2()
+
+config = picam2.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)})
+picam2.configure(config)
+picam2.start()
 
 cap = cv2.VideoCapture("/dev/video0", cv2.CAP_V4L2)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -25,13 +32,9 @@ cv2.createTrackbar("V Max", "Settings", 255, 255, empty)
 # clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
 while True:
-    ret, frame = cap.read()
-    frame = cv2.flip(frame, 1)
-
-
-    if not ret:
-        print("kamera sorun")
-        break
+    
+    frame = picam2.capture_array()
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
     
     # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -146,5 +149,5 @@ while True:
         break
 
 
-cap.release()
+picam2.stop()
 cv2.destroyAllWindows()
