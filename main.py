@@ -34,7 +34,7 @@ cv2.createTrackbar("V Max", "Settings", 255, 255, empty)
 while True:
     
     frame = picam2.capture_array()
-    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    #frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
     
     # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
