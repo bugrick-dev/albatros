@@ -30,6 +30,7 @@ while True:
 
 
     if not ret:
+        print("kamera sorun")
         break
 
     
