@@ -1,29 +1,36 @@
-import serial
-import time
+import asyncio
+from mavsdk import System
 
-PORT = "/dev/serial0" # Hata almadığın portu buraya yaz
-BAUD_RATE = 921600
-
-try:
-    ser = serial.Serial(PORT, BAUD_RATE, timeout=1)
-    print("Loopback testi başlıyor... RPi TX ve RX pinleri BİRBİRİNE bağlı olmalı.")
+async def run():
+    drone = System()
     
-    # Pi kendi kendine mesaj gönderiyor
-    mesaj = b"TEKNOFEST_TEST\n"
-    ser.write(mesaj)
-    time.sleep(0.1)
-    
-    # Pi kendi gönderdiğini okuyabiliyor mu?
-    if ser.in_waiting > 0:
-        gelen_veri = ser.read(ser.in_waiting)
-        print(f"\n[SONUÇ]: BAŞARILI! Gelen veri: {gelen_veri}")
-        print("Raspberry Pi'nin UART donanımı ve Linux ayarları SAPASAĞLAM çalışıyor.")
-    else:
-        print("\n[SONUÇ]: BAŞARISIZ!")
-        print("Pi kendi gönderdiği mesajı bile duyamadı. Pinler ölü veya config hala bozuk.")
+    # Yeni portumuz ttyAMA3 (3 slash kuralına dikkat)
+    print("Cube Orange Plus'a ttyAMA3 üzerinden bağlanılıyor...")
+    await drone.connect(system_address="serial:///dev/ttyAMA3:921600")
 
-except Exception as e:
-    print(f"Hata: {e}")
-finally:
-    if 'ser' in locals() and ser.is_open:
-        ser.close()
+    print("Bağlantı bekleniyor...")
+    async for state in drone.core.connection_state():
+        if state.is_connected:
+            print("Drone bağlandı! UUID:", state.uuid)
+            break
+
+    print("Veri akışı başlıyor... Çıkmak için Ctrl+C'ye basın.\n")
+
+    try:
+        # Roll, Pitch ve Yaw verilerini asenkron olarak çek
+        async for attitude in drone.telemetry.attitude_euler():
+            roll = attitude.roll_deg
+            pitch = attitude.pitch_deg
+            yaw = attitude.yaw_deg
+            
+            # \r ile satır başına dönüp eski verinin üzerine yazıyoruz
+            print(f"Roll: {roll:7.2f}° | Pitch: {pitch:7.2f}° | Yaw: {yaw:7.2f}°", end="\r")
+            
+    except asyncio.CancelledError:
+        pass
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        print("\n\nProgram kullanıcı tarafından sonlandırıldı.")
