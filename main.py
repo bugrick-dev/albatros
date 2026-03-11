@@ -1,30 +1,29 @@
 import serial
 import time
 
-# Eğer serial0 çalışmazsa burayı "/dev/ttyS0" veya "/dev/ttyAMA0" yap
-PORT = "/dev/serial0" 
+PORT = "/dev/serial0" # Hata almadığın portu buraya yaz
 BAUD_RATE = 921600
 
 try:
-    print(f"{PORT} portu {BAUD_RATE} baud hızında açılıyor...")
     ser = serial.Serial(PORT, BAUD_RATE, timeout=1)
-    print("Bağlantı başarılı! Veri dinleniyor...\n")
-    print("NOT: Ekrana garip/anlamsız karakterler veya hex kodları akarsa sistem ÇALIŞIYOR demektir.")
-    print("Çıkmak için Ctrl+C'ye basın.\n" + "-"*50)
+    print("Loopback testi başlıyor... RPi TX ve RX pinleri BİRBİRİNE bağlı olmalı.")
     
-    while True:
-        if ser.in_waiting > 0:
-            # Porttaki ham veriyi oku
-            raw_data = ser.read(ser.in_waiting)
-            # Veriyi ekrana bas
-            print(raw_data)
-        time.sleep(0.05)
+    # Pi kendi kendine mesaj gönderiyor
+    mesaj = b"TEKNOFEST_TEST\n"
+    ser.write(mesaj)
+    time.sleep(0.1)
+    
+    # Pi kendi gönderdiğini okuyabiliyor mu?
+    if ser.in_waiting > 0:
+        gelen_veri = ser.read(ser.in_waiting)
+        print(f"\n[SONUÇ]: BAŞARILI! Gelen veri: {gelen_veri}")
+        print("Raspberry Pi'nin UART donanımı ve Linux ayarları SAPASAĞLAM çalışıyor.")
+    else:
+        print("\n[SONUÇ]: BAŞARISIZ!")
+        print("Pi kendi gönderdiği mesajı bile duyamadı. Pinler ölü veya config hala bozuk.")
 
-except serial.SerialException as e:
-    print(f"\n[HATA] Port açılamadı: {e}")
-    print("Muhtemel sebep: 'sudo usermod -a -G dialout $USER' izni verilmemiş veya port adı yanlış.")
-except KeyboardInterrupt:
-    print("\nTest sonlandırıldı.")
+except Exception as e:
+    print(f"Hata: {e}")
 finally:
     if 'ser' in locals() and ser.is_open:
         ser.close()
