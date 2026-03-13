@@ -12,10 +12,6 @@ config = picam2.create_preview_configuration(main={"format": "RGB888", "size": (
 picam2.configure(config)
 picam2.start()
 
-cap = cv2.VideoCapture("/dev/video0", cv2.CAP_V4L2)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
 
 cv2.namedWindow("Settings")
 cv2.resizeWindow("Settings", 300, 250)
