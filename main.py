@@ -114,5 +114,9 @@ while True:
         print(f"Snapshot: {filename} - {'OK' if ret else 'FAILED'}")
         last_snapshot = now
 
+        files = sorted(os.listdir(SNAPSHOT_DIR))
+        while len(files) > 100:
+            os.remove(os.path.join(SNAPSHOT_DIR, files.pop(0)))
+
 picam2.stop()
 process.stdin.close()
