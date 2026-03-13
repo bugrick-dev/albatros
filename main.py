@@ -110,7 +110,8 @@ while True:
     if now - last_snapshot >= SNAPSHOT_INTERVAL:
         small = cv2.resize(frame, (320, 240))
         filename = os.path.join(SNAPSHOT_DIR, f"{int(now)}.jpg")
-        cv2.imwrite(filename, small)
+        ret = cv2.imwrite(filename, small)
+        print(f"Snapshot: {filename} - {'OK' if ret else 'FAILED'}")
         last_snapshot = now
 
 picam2.stop()
