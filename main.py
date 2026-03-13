@@ -11,7 +11,7 @@ DEST_PORT = 5600
 WIDTH = 640
 HEIGHT = 480
 FPS = 30
-SNAPSHOT_DIR = "/home/albatros/snapshots"
+SNAPSHOT_DIR = "/home/albatros/albatros/snapshots"
 SNAPSHOT_INTERVAL = 1  # saniye
 
 # HSV Değerleri
