@@ -6,7 +6,7 @@ async def run():
     
     # Yeni portumuz ttyAMA3 (3 slash kuralına dikkat)
     print("Cube Orange Plus'a ttyAMA3 üzerinden bağlanılıyor...")
-    await drone.connect(system_address="serial:///dev/ttyAMA3:921600")
+    await drone.connect(system_address="serial:///dev/ttyAMA3:57600")
 
     print("Bağlantı bekleniyor...")
     async for state in drone.core.connection_state():
