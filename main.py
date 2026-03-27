@@ -6,7 +6,7 @@ import time
 import os
 
 # --- Ayarlar ---
-DEST_IP = "161.9.64.151"
+DEST_IP = "192.168.50.23"
 DEST_PORT = 5600
 WIDTH = 640
 HEIGHT = 480
@@ -58,6 +58,8 @@ while True:
     # Mavi maske
     mask_blue = cv2.inRange(hsv, np.array([H_MIN, S_MIN, V_MIN]), np.array([H_MAX, S_MAX, V_MAX]))
     mask_blue = cv2.erode(mask_blue, kernel, iterations=2)
+    mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, kernel)
+    mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
 
     # Kırmızı maske
     mask_red1 = cv2.inRange(hsv, np.array([0, S_MIN, V_MIN]), np.array([10, S_MAX, V_MAX]))
@@ -65,6 +67,8 @@ while True:
     mask_red2 = cv2.inRange(hsv, np.array([170, S_MIN, V_MIN]), np.array([180, S_MAX, V_MAX]))
     mask_red2 = cv2.erode(mask_red2, kernel, iterations=2)
     mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+    mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, kernel)
+    mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, kernel)
 
     # Toplam maske
     mask = cv2.bitwise_or(mask_blue, mask_red)
@@ -72,32 +76,34 @@ while True:
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
     # Kontur tespiti
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 500:
-            perimeter = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.05 * perimeter, True)
-            corners = len(approx)
-            x, y, w, h = cv2.boundingRect(approx)
-            aspectRatio = float(w) / h
-            M = cv2.moments(cnt)
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-                cv2.putText(frame, f"X: {cx} Y: {cy}", (x, y + h + 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-            cv2.drawContours(frame, [approx], -1, (0, 0, 255), 2)
-            if corners == 3:
-                isim = "ucgen"
-            elif corners == 4:
-                isim = "kare" if 0.90 < aspectRatio < 1.10 else "dikdortgen"
-            elif corners == 6:
-                isim = "hexagon"
-            else:
-                isim = "circle"
-            cv2.putText(frame, isim, (x, y - 5), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0), 2)
+    for color, mask in [("mavi", mask_blue), ("kirmizi", mask_red)]:
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area > 500:
+                perimeter = cv2.arcLength(cnt, True)
+                approx = cv2.approxPolyDP(cnt, 0.05 * perimeter, True)
+                corners = len(approx)
+                x, y, w, h = cv2.boundingRect(approx)
+                aspectRatio = float(w) / h
+                M = cv2.moments(cnt)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+                    cv2.putText(frame, f"X: {cx} Y: {cy}", (x, y + h + 20),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                cv2.drawContours(frame, [approx], -1, (0, 0, 255), 2)
+                if corners == 3:
+                    isim = "ucgen"
+                elif corners == 4:
+                    isim = "kare" if 0.90 < aspectRatio < 1.10 else "dikdortgen"
+                elif corners == 6:
+                    isim = "hexagon"
+                else:
+                    isim = "circle"
+                cv2.putText(frame, isim, (x, y - 5), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0), 2)
+
 
     # UDP stream
     try:
