@@ -10,6 +10,7 @@ import threading
 from queue import Queue
 from mavsdk import System
 from mavsdk.mission import MissionItem, MissionPlan
+from collections import deque
 
 
 DEST_IP = "192.168.50.23" #Ground Adapter IP
@@ -19,6 +20,7 @@ HEIGHT = 480
 FPS = 30
 SNAPSHOT_DIR = "/home/albatros/albatros/snapshots"
 SNAPSHOT_INTERVAL = 1 #Photos per second
+snapshot_history = deque()
 
 H_MIN, H_MAX = 100, 140
 S_MIN, S_MAX = 90, 255
@@ -65,14 +67,35 @@ telemetry_lock = threading.Lock()
 current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None}
 
 
-def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg):
+def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, target_cx, target_cy):
     camera_angle_deg = 60.0
-    horizontal_dist = alt * math.tan(math.radians(camera_angle_deg))
+
+    fov_x_rad = math.radians(62.2)
+    fov_y_rad = math.radians(48.8)
+
+    center_x = WIDTH / 2
+    center_y = HEIGHT / 2
+
+    delta_x_pixel =  target_cx - center_x
+    delta_y_pixel =  center_y - target_cy
+
+    offset_angle_x = delta_x_pixel * (fov_x_rad / WIDTH)
+    offset_angle_y = delta_y_pixel * (fov_y_rad / HEIGHT)
+
+    total_pitch = camera_angle_deg + offset_angle_y
+
+    dist_y = alt * math.tan(total_pitch)
+    dist_x = (alt / math.cos(total_pitch)) * math.tan(offset_angle_x)
+    
     yaw_rad = math.radians(yaw_deg)
-    delta_north = horizontal_dist * math.cos(yaw_rad)
-    delta_east  = horizontal_dist * math.sin(yaw_rad)
+
+    yaw_rad = math.radians(yaw_deg)
+    delta_north = (dist_y * math.cos(yaw_rad)) - (dist_x * math.sin(yaw_rad))
+    delta_east  = (dist_y * math.sin(yaw_rad)) + (dist_x * math.cos(yaw_rad))
+
     target_lat = drone_lat + (delta_north / 111320)
     target_lon = drone_lon + (delta_east  / (111320 * math.cos(math.radians(drone_lat))))
+
     return target_lat, target_lon
 
 
@@ -86,17 +109,17 @@ def detection_thread(queue, picam2, process):
         # Mavi maske
         mask_blue = cv2.inRange(hsv, np.array([H_MIN, S_MIN, V_MIN]), np.array([H_MAX, S_MAX, V_MAX]))
         mask_blue = cv2.erode(mask_blue, kernel, iterations=2)
-        mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, kernel)
         mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
+        mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, kernel)
 
         # Kırmızı maske
         mask_red1 = cv2.inRange(hsv, np.array([0, S_MIN, V_MIN]), np.array([10, S_MAX, V_MAX]))
-        mask_red1 = cv2.erode(mask_red1, kernel, iterations=2)
         mask_red2 = cv2.inRange(hsv, np.array([170, S_MIN, V_MIN]), np.array([180, S_MAX, V_MAX]))
-        mask_red2 = cv2.erode(mask_red2, kernel, iterations=2)
         mask_red = cv2.bitwise_or(mask_red1, mask_red2)
-        mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, kernel)
+        mask_red1 = cv2.erode(mask_red1, kernel, iterations=2)
+        mask_red2 = cv2.erode(mask_red2, kernel, iterations=2)
         mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, kernel)
+        mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, kernel)
 
         # Kontur tespiti
         for color, mask in [("mavi", mask_blue), ("kirmizi", mask_red)]:
@@ -127,7 +150,7 @@ def detection_thread(queue, picam2, process):
                             isim = "circle"
                         cv2.putText(frame, isim, (x, y - 5), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0), 2)
 
-                        target_queue.put({
+                        queue.put({
                             "color": color,
                             "isim": isim,
                             "cx": cx,
@@ -152,11 +175,15 @@ def detection_thread(queue, picam2, process):
             filename = os.path.join(SNAPSHOT_DIR, f"{int(now)}.jpg")
             ret = cv2.imwrite(filename, small)
             print(f"Snapshot: {filename} - {'OK' if ret else 'FAILED'}")
+            
+            if ret:
+                snapshot_history.append(filename)
+            
+            while (len(snapshot_history)>100):
+                oldest = snapshot_history.popleft()
+                if os.path.exists(oldest):
+                    os.remove(oldest)
             last_snapshot = now
-
-            files = sorted(os.listdir(SNAPSHOT_DIR))
-            while len(files) > 100:
-                os.remove(os.path.join(SNAPSHOT_DIR, files.pop(0)))
 
 
 
@@ -197,7 +224,7 @@ async def mission_task(drone, queue):
                     longitude_deg=lon,
                     relative_altitude_m=tel["alt"],
                     speed_m_s=15.0,
-                    is_fly_through=False,
+                    is_fly_through=True,
                     gimbal_pitch_deg=float('nan'),
                     gimbal_yaw_deg=float('nan'),
                     camera_action=MissionItem.CameraAction.NONE,
