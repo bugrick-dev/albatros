@@ -1,147 +1,96 @@
 import cv2
 import numpy as np
 
-def empty (a):
-    pass
-
-
 cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
+H_MIN, H_MAX = 100, 140
+S_MIN, S_MAX = 90, 255
+V_MIN, V_MAX = 50, 255
+kernel = np.ones((5, 5), np.uint8)
 
-cv2.namedWindow("Settings")
-cv2.resizeWindow("Settings", 300, 250)
+def detect_square(cnt):
+    area = cv2.contourArea(cnt)
+    if area < 500:
+        return None
 
-cv2.createTrackbar("H Min", "Settings", 100, 179, empty)
-cv2.createTrackbar("H Max", "Settings", 140, 179, empty)
-cv2.createTrackbar("S Min", "Settings", 90, 255, empty)
-cv2.createTrackbar("S Max", "Settings", 255, 255, empty)
-cv2.createTrackbar("V Min", "Settings", 50, 255, empty)
-cv2.createTrackbar("V Max", "Settings", 255, 255, empty)
-    
+    rect = cv2.minAreaRect(cnt)
+    (center), (width, height), angle = rect
 
+    if max(width, height) == 0:
+        return None
 
-# clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    aspect_ratio = min(width, height) / max(width, height)
+    if not (0.8 < aspect_ratio < 1.2):
+        return None
+
+    if area > 10000:
+        return "blue_target", area, center
+    elif area > 2500:
+        return "red_target", area, center
+
+    return None
 
 while True:
     ret, frame = cap.read()
-    frame = cv2.flip(frame, 1)
-
-
     if not ret:
         break
 
-    
-    # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    # blur = cv2.GaussianBlur(gray, (11,11), 1)
-
-    # canny = cv2.Canny(blur, 100, 150)
-    
-    h_min = cv2.getTrackbarPos("H Min", "Settings")
-    h_max = cv2.getTrackbarPos("H Max", "Settings")
-    s_min = cv2.getTrackbarPos("S Min", "Settings")
-    s_max = cv2.getTrackbarPos("S Max", "Settings")
-    v_min = cv2.getTrackbarPos("V Min", "Settings")
-    v_max = cv2.getTrackbarPos("V Max", "Settings")    
-
-
-    #h, s, v = cv2.split(hsv)
-
-
-    
-
-    #v_balanced = clahe.apply(v)
-
-    #hsv_new = cv2.merge([h, s, v_balanced])
-
+    frame = cv2.flip(frame, 1)
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    lower_blue = np.array([h_min, s_min, v_min]) 
-    upper_blue = np.array([h_max, s_max, v_max])
-    mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
+    mask_blue = cv2.inRange(hsv, np.array([H_MIN, S_MIN, V_MIN]), np.array([H_MAX, S_MAX, V_MAX]))
+    mask_red1 = cv2.inRange(hsv, np.array([0, S_MIN, V_MIN]), np.array([10, S_MAX, V_MAX]))
+    mask_red2 = cv2.inRange(hsv, np.array([170, S_MIN, V_MIN]), np.array([180, S_MAX, V_MAX]))
+    mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+    mask_grey = cv2.inRange(hsv, np.array([0, 0, 70]), np.array([180, 40, 200]))
 
-    kernel = np.ones((5,5), np.uint8)
-    mask_blue = cv2.erode(mask_blue, kernel, iterations=2)
+    mask_blue = cv2.erode(mask_blue, kernel, iterations=1)
+    mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
+    mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, kernel)
 
-    mask = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
+    mask_red = cv2.erode(mask_red, kernel, iterations=1)
+    mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, kernel)
+    mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, kernel)
 
-    
-    lower_red1 = np.array([0, s_min, v_min])
-    upper_red1 = np.array([10, s_max, v_max])
-    mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 50, 150)
+    edges = cv2.bitwise_and(edges, edges, mask=mask_grey)
 
-    mask_red1 = cv2.erode(mask_red1, kernel, iterations=2)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 80, minLineLength=120, maxLineGap=15)
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+            if angle < 15 or angle > 165:
+                cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 3)
+                cv2.putText(frame, "pole", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 255, 255), 2)
 
-    lower_red2 = np.array([170, s_min, v_min])
-    upper_red2 = np.array([180, s_max, v_max])
-    mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    for color, mask in [("blue_target", mask_blue), ("red_target", mask_red)]:
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            result = detect_square(cnt)
+            if not result:
+                continue
 
-    mask_red2 = cv2.erode(mask_red2, kernel, iterations=2)
-
-    mask_red_total = cv2.bitwise_or(mask_red1, mask_red2)
-
-    mask = cv2.bitwise_or(mask_blue, mask_red_total)
-    
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-   
-    
-
-
-    for cnt in contours:
-
-        area = cv2.contourArea(cnt)
-
-        if area > 500:
-
-            perimeter = cv2.arcLength(cnt, True)
-
-            approx = cv2.approxPolyDP(cnt, 0.05 * perimeter, True)
-
-            corners = len(approx)
-
-            x, y, w, h = cv2.boundingRect(approx)
-            
-            aspectRatio = float(w) / h
-
-            M = cv2.moments(cnt)
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                
-                # Merkeze bir nokta ve koordinatları yazalım
-                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-                cv2.putText(frame, f"X: {cx} Y: {cy}", (x, y + h + 20), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                
-            cv2.drawContours(frame, [approx], -1, (0, 0, 255), 2)
-
-
-
-            if corners == 3:
-                isim = "ucgen"
-            elif corners == 4:
-                if 0.95 < aspectRatio < 1.05:
-                    isim = "kare"
-                else:
-                    isim = "dikdortgen"
-            elif corners == 6:
-                isim = "hexagon"
-            else:
-                isim = "circle"
-            
-            cv2.putText(frame, isim, (x, y - 5), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0), 2)
-
-            
-
+            shape_type, area, center = result
+            cx, cy = int(center[0]), int(center[1])
+            color_rgb = (255, 0, 0) if "blue" in shape_type else (0, 0, 255)
+            cv2.circle(frame, (cx, cy), 5, color_rgb, -1)
+            cv2.drawContours(frame, [cnt], -1, color_rgb, 2)
+            cv2.putText(frame, shape_type, (cx - 30, cy - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_rgb, 2)
 
     cv2.imshow("kamera", frame)
-    cv2.imshow("maske", mask)
+    cv2.imshow("maskeblue", mask_blue)
+    cv2.imshow("maskered", mask_red)
+    cv2.imshow("maskepole", edges)
+
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
-
 
 cap.release()
 cv2.destroyAllWindows()
