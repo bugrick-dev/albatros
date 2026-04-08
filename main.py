@@ -10,7 +10,7 @@ S_MIN, S_MAX = 90, 255
 V_MIN, V_MAX = 50, 255
 kernel = np.ones((5, 5), np.uint8)
 
-def detect_square(cnt):
+def detect_square(cnt, hsv):
     area = cv2.contourArea(cnt)
     if area < 500:
         return None
@@ -25,12 +25,23 @@ def detect_square(cnt):
     if not (0.8 < aspect_ratio < 1.2):
         return None
 
-    if area > 10000:
-        return "blue_target", area, center
-    elif area > 2500:
-        return "red_target", area, center
+    x, y, w, h = cv2.boundingRect(cnt)
 
-    return None
+    roi = hsv[y:y+h, x:x+w]
+    if roi.size == 0:
+        return None
+
+    mean_h = np.mean(roi[:, :, 0])
+
+    if 90 < mean_h < 140:  # Blue range
+        shape_type = "blue_target"
+    elif (0 <= mean_h <= 10) or (170 <= mean_h <= 180):  # Red range
+        shape_type = "red_target"
+    else:
+        return None  # Not blue or red
+
+    return shape_type, area, center
+
 
 while True:
     ret, frame = cap.read()
@@ -72,7 +83,7 @@ while True:
     for color, mask in [("blue_target", mask_blue), ("red_target", mask_red)]:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
-            result = detect_square(cnt)
+            result = detect_square(cnt, hsv)
             if not result:
                 continue
 
