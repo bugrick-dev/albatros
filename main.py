@@ -7,26 +7,38 @@ import subprocess
 import time
 import os
 import threading
-from queue import Queue
+from queue import Queue, Empty
 from mavsdk import System
 from mavsdk.mission import MissionItem, MissionPlan
 from collections import deque
 
 
-DEST_IP = "192.168.50.23" #Ground Adapter IP
+DEST_IP = "192.168.2.1" #Ground Adapter IP
 DEST_PORT = 5500
-WIDTH = 640
-HEIGHT = 480
-FPS = 30
+WIDTH = 320
+HEIGHT = 240
+FPS = 15
 SNAPSHOT_DIR = "/home/albatros/albatros/snapshots"
 SNAPSHOT_INTERVAL = 1 #Photos per second
+MIN_AREA = max(200, int(0.0005 * WIDTH * HEIGHT))
+MAX_AREA = int(0.2 * WIDTH * HEIGHT)
+os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+
+files = sorted(os.listdir(SNAPSHOT_DIR))
+while len(files) > 100:
+    try:
+        os.remove(os.path.join(SNAPSHOT_DIR, files.pop(0)))
+    except:
+        pass
+
 snapshot_history = deque()
+for f in files:
+    snapshot_history.append(os.path.join(SNAPSHOT_DIR, f))
 
 H_MIN, H_MAX = 100, 140
 S_MIN, S_MAX = 90, 255
 V_MIN, V_MAX = 50, 255
 
-os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
 # --- FFmpeg pipeline ---
 ffmpeg_cmd = [
@@ -40,6 +52,10 @@ ffmpeg_cmd = [
     '-i', '-',
     '-c:v', 'h264_v4l2m2m',
     '-b:v', '2000k',
+    '-bf', '0',
+    '-g', '15',
+    '-muxdelay', '0.001',
+    '-flush_packets', '1',
     '-pkt_size', '1316',
     '-f', 'mpegts',
     f'udp://{DEST_IP}:{DEST_PORT}?pkt_size=1316'
@@ -68,7 +84,7 @@ current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None}
 
 
 def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, target_cx, target_cy):
-    camera_angle_deg = 60.0
+    camera_angle_deg = math.radians(60.0)
 
     fov_x_rad = math.radians(62.2)
     fov_y_rad = math.radians(48.8)
@@ -86,8 +102,6 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, target_cx, target_cy):
 
     dist_y = alt * math.tan(total_pitch)
     dist_x = (alt / math.cos(total_pitch)) * math.tan(offset_angle_x)
-    
-    yaw_rad = math.radians(yaw_deg)
 
     yaw_rad = math.radians(yaw_deg)
     delta_north = (dist_y * math.cos(yaw_rad)) - (dist_x * math.sin(yaw_rad))
@@ -101,14 +115,18 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, target_cx, target_cy):
 
 def detection_thread(queue, picam2, process):
     last_snapshot = time.time()
+
+    seen_targets = {}
+
     while True:
         frame = picam2.capture_array()
+
+        frame = cv2.GaussianBlur(frame, (5,5), 0)
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
         # Mavi maske
         mask_blue = cv2.inRange(hsv, np.array([H_MIN, S_MIN, V_MIN]), np.array([H_MAX, S_MAX, V_MAX]))
-        mask_blue = cv2.erode(mask_blue, kernel, iterations=2)
         mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
         mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, kernel)
 
@@ -116,8 +134,6 @@ def detection_thread(queue, picam2, process):
         mask_red1 = cv2.inRange(hsv, np.array([0, S_MIN, V_MIN]), np.array([10, S_MAX, V_MAX]))
         mask_red2 = cv2.inRange(hsv, np.array([170, S_MIN, V_MIN]), np.array([180, S_MAX, V_MAX]))
         mask_red = cv2.bitwise_or(mask_red1, mask_red2)
-        mask_red1 = cv2.erode(mask_red1, kernel, iterations=2)
-        mask_red2 = cv2.erode(mask_red2, kernel, iterations=2)
         mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, kernel)
         mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, kernel)
 
@@ -126,20 +142,29 @@ def detection_thread(queue, picam2, process):
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                if area > 500:
+                if MAX_AREA > area > MIN_AREA:
                     perimeter = cv2.arcLength(cnt, True)
                     approx = cv2.approxPolyDP(cnt, 0.05 * perimeter, True)
                     corners = len(approx)
+                    rect = cv2.minAreaRect(cnt)
+                    width, height = rect[1]
+                    if width > 0 and height > 0:
+                        aspectRatio = max(width, height) / min(width, height)
+                    else:
+                        aspectRatio = 1.0
                     x, y, w, h = cv2.boundingRect(approx)
-                    aspectRatio = float(w) / h
                     M = cv2.moments(cnt)
                     if M["m00"] != 0:
                         cx = int(M["m10"] / M["m00"])
                         cy = int(M["m01"] / M["m00"])
+
                         cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+
                         cv2.putText(frame, f"X: {cx} Y: {cy}", (x, y + h + 20),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
                         cv2.drawContours(frame, [approx], -1, (0, 0, 255), 2)
+
                         if corners == 3:
                             isim = "ucgen"
                         elif corners == 4:
@@ -149,6 +174,16 @@ def detection_thread(queue, picam2, process):
                         else:
                             isim = "circle"
                         cv2.putText(frame, isim, (x, y - 5), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0), 2)
+
+                        cx_bucket = cx // 50
+                        cy_bucket = cy // 50
+                        key = (color, isim, cx_bucket, cy_bucket)
+                        now_check = time.time()
+
+                        if key in seen_targets and now_check - seen_targets[key] < 2.0:
+                            continue
+                        
+                        seen_targets[key] = now_check
 
                         queue.put({
                             "color": color,
@@ -163,9 +198,21 @@ def detection_thread(queue, picam2, process):
         except BrokenPipeError:
             print("FFmpeg koptu, yeniden başlatılıyor...")
             try:
+                process_container[0].stdin.close()
+                process_container[0].terminate()
+                process_container[0].wait(timeout=2.0)
+            except:
+                try:
+                    process_container[0].kill()
+                except:
+                    pass
+
+            time.sleep(0.5)
+
+            try:
                 process_container[0] = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
             except Exception as e:
-                print(f"FFmpeg başlatılamadı: {e}")
+                print(f"FFMPEG failed{e}")
                 time.sleep(1)
 
         # Saniye başı snapshot
@@ -204,43 +251,46 @@ async def attitude_task(drone):
 async def mission_task(drone, queue):
     waypoints = {}  # liste değil dict, key = renk
     while True:
-        if not queue.empty():
-            target = queue.get()
-            with telemetry_lock:
-                tel = current_telemetry.copy()
-            
-            if None not in tel.values():
-                color = target["color"]
-                
-                # bu renk için zaten waypoint var mı
-                if color in waypoints:
-                    await asyncio.sleep(0.05)
-                    continue
-                
-                lat, lon = pixel_to_gps(tel["lat"], tel["lon"], tel["alt"], tel["yaw"])
-                
-                item = MissionItem(
-                    latitude_deg=lat,
-                    longitude_deg=lon,
-                    relative_altitude_m=tel["alt"],
-                    speed_m_s=15.0,
-                    is_fly_through=True,
-                    gimbal_pitch_deg=float('nan'),
-                    gimbal_yaw_deg=float('nan'),
-                    camera_action=MissionItem.CameraAction.NONE,
-                    loiter_time_s=float('nan'),
-                    camera_photo_interval_s=float('nan'),
-                    acceptance_radius_m=5.0,
-                    yaw_deg=float('nan'),
-                    camera_photo_distance_m=float('nan'),
-                    vehicle_action=MissionItem.VehicleAction.NONE
-                )
-                waypoints[color] = item
-                
-                await drone.mission.upload_mission(MissionPlan(list(waypoints.values())))
-                print(f"Waypoint eklendi: {color} {target['isim']} → {lat:.6f}, {lon:.6f}")
+        try:
+            target = queue.get_nowait()
+        except Empty:
+            await asyncio.sleep(0.05)
+            continue
         
-        await asyncio.sleep(0.05)
+        with telemetry_lock:
+            tel = current_telemetry.copy()
+        
+        if None not in tel.values():
+            color = target["color"]
+            
+            # bu renk için zaten waypoint var mı
+            if color in waypoints:
+                await asyncio.sleep(0.05)
+                continue
+            
+            lat, lon = pixel_to_gps(tel["lat"], tel["lon"], tel["alt"], tel["yaw"], target["cx"], target["cy"])
+            
+            item = MissionItem(
+                latitude_deg=lat,
+                longitude_deg=lon,
+                relative_altitude_m=tel["alt"],
+                speed_m_s=15.0,
+                is_fly_through=True,
+                gimbal_pitch_deg=float('nan'),
+                gimbal_yaw_deg=float('nan'),
+                camera_action=MissionItem.CameraAction.NONE,
+                loiter_time_s=float('nan'),
+                camera_photo_interval_s=float('nan'),
+                acceptance_radius_m=5.0,
+                yaw_deg=float('nan'),
+                camera_photo_distance_m=float('nan'),
+                vehicle_action=MissionItem.VehicleAction.NONE
+            )
+            waypoints[color] = item
+            
+            await drone.mission.upload_mission(MissionPlan(list(waypoints.values())))
+            print(f"Waypoint eklendi: {color} {target['isim']} → {lat:.6f}, {lon:.6f}")
+    
 
         
 async def run():
