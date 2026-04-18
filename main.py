@@ -3,9 +3,7 @@ import asyncio
 from picamera2 import Picamera2
 import cv2
 import numpy as np
-import subprocess
 import time
-import os
 import threading
 from queue import Queue, Empty
 from mavsdk import System
@@ -13,57 +11,15 @@ from mavsdk.mission import MissionItem, MissionPlan
 from collections import deque
 
 
-DEST_IP = "192.168.2.1" #Ground Adapter IP
-DEST_PORT = 5500
 WIDTH = 320
 HEIGHT = 240
 FPS = 15
-SNAPSHOT_DIR = "/home/albatros/albatros/snapshots"
-SNAPSHOT_INTERVAL = 1 #Photos per second
 MIN_AREA = max(200, int(0.0005 * WIDTH * HEIGHT))
 MAX_AREA = int(0.2 * WIDTH * HEIGHT)
-os.makedirs(SNAPSHOT_DIR, exist_ok=True)
-
-files = sorted(os.listdir(SNAPSHOT_DIR))
-while len(files) > 100:
-    try:
-        os.remove(os.path.join(SNAPSHOT_DIR, files.pop(0)))
-    except:
-        pass
-
-snapshot_history = deque()
-for f in files:
-    snapshot_history.append(os.path.join(SNAPSHOT_DIR, f))
 
 H_MIN, H_MAX = 100, 140
 S_MIN, S_MAX = 90, 255
 V_MIN, V_MAX = 50, 255
-
-
-# --- FFmpeg pipeline ---
-ffmpeg_cmd = [
-    'ffmpeg',
-    '-y',
-    '-f', 'rawvideo',
-    '-vcodec', 'rawvideo',
-    '-pix_fmt', 'bgr24',
-    '-s', f'{WIDTH}x{HEIGHT}',
-    '-r', str(FPS),
-    '-i', '-',
-    '-c:v', 'h264_v4l2m2m',
-    '-b:v', '2000k',
-    '-bf', '0',
-    '-g', '15',
-    '-muxdelay', '0.001',
-    '-flush_packets', '1',
-    '-pkt_size', '1316',
-    '-f', 'mpegts',
-    f'udp://{DEST_IP}:{DEST_PORT}?pkt_size=1316'
-]
-
-process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
-
-process_container = [process]
 
 picam2 = Picamera2()
 config = picam2.create_preview_configuration(main={
@@ -73,9 +29,7 @@ config = picam2.create_preview_configuration(main={
 picam2.configure(config)
 picam2.start()
 
-
 kernel = np.ones((5, 5), np.uint8)
-last_snapshot = time.time()
 
 target_queue = Queue()
 
@@ -92,8 +46,8 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, target_cx, target_cy):
     center_x = WIDTH / 2
     center_y = HEIGHT / 2
 
-    delta_x_pixel =  target_cx - center_x
-    delta_y_pixel =  center_y - target_cy
+    delta_x_pixel = target_cx - center_x
+    delta_y_pixel = center_y - target_cy
 
     offset_angle_x = delta_x_pixel * (fov_x_rad / WIDTH)
     offset_angle_y = delta_y_pixel * (fov_y_rad / HEIGHT)
@@ -105,23 +59,21 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, target_cx, target_cy):
 
     yaw_rad = math.radians(yaw_deg)
     delta_north = (dist_y * math.cos(yaw_rad)) - (dist_x * math.sin(yaw_rad))
-    delta_east  = (dist_y * math.sin(yaw_rad)) + (dist_x * math.cos(yaw_rad))
+    delta_east = (dist_y * math.sin(yaw_rad)) + (dist_x * math.cos(yaw_rad))
 
     target_lat = drone_lat + (delta_north / 111320)
-    target_lon = drone_lon + (delta_east  / (111320 * math.cos(math.radians(drone_lat))))
+    target_lon = drone_lon + (delta_east / (111320 * math.cos(math.radians(drone_lat))))
 
     return target_lat, target_lon
 
 
-def detection_thread(queue, picam2, process):
-    last_snapshot = time.time()
-
+def detection_thread(queue):
     seen_targets = {}
 
     while True:
         frame = picam2.capture_array()
 
-        frame = cv2.GaussianBlur(frame, (5,5), 0)
+        frame = cv2.GaussianBlur(frame, (5, 5), 0)
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -158,13 +110,6 @@ def detection_thread(queue, picam2, process):
                         cx = int(M["m10"] / M["m00"])
                         cy = int(M["m01"] / M["m00"])
 
-                        cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-
-                        cv2.putText(frame, f"X: {cx} Y: {cy}", (x, y + h + 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-
-                        cv2.drawContours(frame, [approx], -1, (0, 0, 255), 2)
-
                         if corners == 3:
                             isim = "ucgen"
                         elif corners == 4:
@@ -173,7 +118,6 @@ def detection_thread(queue, picam2, process):
                             isim = "hexagon"
                         else:
                             isim = "circle"
-                        cv2.putText(frame, isim, (x, y - 5), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0), 2)
 
                         cx_bucket = cx // 50
                         cy_bucket = cy // 50
@@ -191,63 +135,26 @@ def detection_thread(queue, picam2, process):
                             "cx": cx,
                             "cy": cy
                         })
-
-        # UDP stream
-        try:
-            process_container[0].stdin.write(frame.tobytes())
-        except BrokenPipeError:
-            print("FFmpeg koptu, yeniden başlatılıyor...")
-            try:
-                process_container[0].stdin.close()
-                process_container[0].terminate()
-                process_container[0].wait(timeout=2.0)
-            except:
-                try:
-                    process_container[0].kill()
-                except:
-                    pass
-
-            time.sleep(0.5)
-
-            try:
-                process_container[0] = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
-            except Exception as e:
-                print(f"FFMPEG failed{e}")
-                time.sleep(1)
-
-        # Saniye başı snapshot
-        now = time.time()
-        if now - last_snapshot >= SNAPSHOT_INTERVAL:
-            small = cv2.resize(frame, (320, 240))
-            filename = os.path.join(SNAPSHOT_DIR, f"{int(now)}.jpg")
-            ret = cv2.imwrite(filename, small)
-            print(f"Snapshot: {filename} - {'OK' if ret else 'FAILED'}")
-            
-            if ret:
-                snapshot_history.append(filename)
-            
-            while (len(snapshot_history)>100):
-                oldest = snapshot_history.popleft()
-                if os.path.exists(oldest):
-                    os.remove(oldest)
-            last_snapshot = now
+                        
+                        print(f"Tespit: {color} {isim} @ ({cx}, {cy})")
 
 
-
-#Getting telemetry info
+# Getting telemetry info
 async def telemetry_task(drone):
     async for position in drone.telemetry.position():
         with telemetry_lock:
             current_telemetry["lat"] = position.latitude_deg
             current_telemetry["lon"] = position.longitude_deg
             current_telemetry["alt"] = position.relative_altitude_m
-#Getting telemety info
+
+
 async def attitude_task(drone):
     async for attitude in drone.telemetry.attitude_euler():
         with telemetry_lock:
             current_telemetry["yaw"] = attitude.yaw_deg
 
-#assigning missions BUT NOT STARTING
+
+# Assigning missions BUT NOT STARTING
 async def mission_task(drone, queue):
     waypoints = {}  # liste değil dict, key = renk
     while True:
@@ -288,11 +195,24 @@ async def mission_task(drone, queue):
             )
             waypoints[color] = item
             
-            await drone.mission.upload_mission(MissionPlan(list(waypoints.values())))
-            print(f"Waypoint eklendi: {color} {target['isim']} → {lat:.6f}, {lon:.6f}")
-    
+            try:
+                await drone.mission.upload_mission(MissionPlan(list(waypoints.values())))
+                print(f"✓ Upload OK: {color} {target['isim']} → {lat:.6f}, {lon:.6f}")
+            except Exception as e:
+                print(f"✗ Upload FAILED: {e}")
+                del waypoints[color]  # Başarısız olursa tekrar denensin
+                continue
+            
+            # Upload sonrası nefes aldır
+            await asyncio.sleep(1.0)
 
-        
+            try:
+                downloaded = await drone.mission.download_mission()
+                print(f"Pixhawk toplam waypoint: {len(downloaded.mission_items)}")
+            except Exception as e:
+                print(f"✗ Download FAILED: {e}")
+
+
 async def run():
     drone = System()
     
@@ -308,7 +228,7 @@ async def run():
     
     print("Veri akışı başlıyor... Çıkmak için Ctrl+C'ye basın.\n")
     
-    t = threading.Thread(target=detection_thread, args=(target_queue, picam2, process_container), daemon=True)
+    t = threading.Thread(target=detection_thread, args=(target_queue,), daemon=True)
     t.start()
 
     try:
@@ -319,7 +239,6 @@ async def run():
         )
     except asyncio.CancelledError:
         pass
-
 
 
 if __name__ == "__main__":
