@@ -246,10 +246,12 @@ async def attitude_task(drone):
     async for attitude in drone.telemetry.attitude_euler():
         with telemetry_lock:
             current_telemetry["yaw"] = attitude.yaw_deg
-
-#assigning missions BUT NOT STARTING
 async def mission_task(drone, queue):
-    waypoints = {}  # liste değil dict, key = renk
+    """
+    Kuyruktan gelen hedef tespiti verisini işler.
+    Mevcut görevleri temizler ve sadece yeni hedefleri otopilota yazar.
+    """
+    waypoints = {}  # key = renk, value = MissionItem
     while True:
         try:
             target = queue.get_nowait()
@@ -260,22 +262,24 @@ async def mission_task(drone, queue):
         with telemetry_lock:
             tel = current_telemetry.copy()
         
+        # Telemetri eksiksizse işleme devam et
         if None not in tel.values():
             color = target["color"]
             
-            # bu renk için zaten waypoint var mı
+            # İlgili renk (hedef) için zaten bir waypoint oluşturulduysa atla
             if color in waypoints:
                 await asyncio.sleep(0.05)
                 continue
             
+            # Görüntü işleme koordinatlarını GPS koordinatlarına dönüştür
             lat, lon = pixel_to_gps(tel["lat"], tel["lon"], tel["alt"], tel["yaw"], target["cx"], target["cy"])
             
             item = MissionItem(
                 latitude_deg=lat,
                 longitude_deg=lon,
                 relative_altitude_m=tel["alt"],
-                speed_m_s=15.0,
-                is_fly_through=True,
+                speed_m_s=15.0,  # Sabit kanat seyir hızı
+                is_fly_through=True,  # Sabit kanat için loiter iptali (stall önleme)
                 gimbal_pitch_deg=float('nan'),
                 gimbal_yaw_deg=float('nan'),
                 camera_action=MissionItem.CameraAction.NONE,
@@ -286,11 +290,19 @@ async def mission_task(drone, queue):
                 camera_photo_distance_m=float('nan'),
                 vehicle_action=MissionItem.VehicleAction.NONE
             )
+            
             waypoints[color] = item
             
-            await drone.mission.upload_mission(MissionPlan(list(waypoints.values())))
-            print(f"Waypoint eklendi: {color} {target['isim']} → {lat:.6f}, {lon:.6f}")
-    
+            try:
+                # 1. Eski (uyumsuz frame yapısına sahip olabilecek) rotayı temizle
+                await drone.mission.clear_mission()
+                
+                # 2. Yeni hedefi (veya hedefleri) otopilota gönder
+                await drone.mission.upload_mission(MissionPlan(list(waypoints.values())))
+                
+                print(f"[MISSION] Eski rota silindi. Yeni waypoint yazıldı: {color} {target['isim']} → Lat: {lat:.6f}, Lon: {lon:.6f}")
+            except Exception as e:
+                print(f"[MISSION HATA] Görev yüklenirken sorun oluştu: {e}")
 
         
 async def run():
