@@ -217,7 +217,7 @@ async def run():
     drone = System()
     
     print("Cube Orange Plus'a ttyAMA3 üzerinden bağlanılıyor...")
-    await drone.connect(system_address="serial:///dev/ttyAMA3:57600")
+    await drone.connect(system_address="serial:///dev/ttyAMA3:115200")
     
     print("Bağlantı bekleniyor...")
 
