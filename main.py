@@ -72,73 +72,61 @@ def detection_thread(queue):
 
     while True:
         frame = picam2.capture_array()
-
         frame = cv2.GaussianBlur(frame, (5, 5), 0)
-
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Mavi maske
         mask_blue = cv2.inRange(hsv, np.array([H_MIN, S_MIN, V_MIN]), np.array([H_MAX, S_MAX, V_MAX]))
         mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
         mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, kernel)
 
-        # Kırmızı maske
         mask_red1 = cv2.inRange(hsv, np.array([0, S_MIN, V_MIN]), np.array([10, S_MAX, V_MAX]))
         mask_red2 = cv2.inRange(hsv, np.array([170, S_MIN, V_MIN]), np.array([180, S_MAX, V_MAX]))
         mask_red = cv2.bitwise_or(mask_red1, mask_red2)
         mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, kernel)
         mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, kernel)
 
-        # Kontur tespiti
         for color, mask in [("mavi", mask_blue), ("kirmizi", mask_red)]:
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                if MAX_AREA > area > MIN_AREA:
-                    perimeter = cv2.arcLength(cnt, True)
-                    approx = cv2.approxPolyDP(cnt, 0.05 * perimeter, True)
-                    corners = len(approx)
-                    rect = cv2.minAreaRect(cnt)
-                    width, height = rect[1]
-                    if width > 0 and height > 0:
-                        aspectRatio = max(width, height) / min(width, height)
-                    else:
-                        aspectRatio = 1.0
-                    x, y, w, h = cv2.boundingRect(approx)
-                    M = cv2.moments(cnt)
-                    if M["m00"] != 0:
-                        cx = int(M["m10"] / M["m00"])
-                        cy = int(M["m01"] / M["m00"])
+                if not (MIN_AREA < area < MAX_AREA):
+                    continue
 
-                        if corners == 3:
-                            isim = "ucgen"
-                        elif corners == 4:
-                            isim = "kare" if 0.90 < aspectRatio < 1.10 else "dikdortgen"
-                        elif corners == 6:
-                            isim = "hexagon"
-                        else:
-                            isim = "circle"
+                perimeter = cv2.arcLength(cnt, True)
+                approx = cv2.approxPolyDP(cnt, 0.05 * perimeter, True)
+                corners = len(approx)
 
-                        cx_bucket = cx // 50
-                        cy_bucket = cy // 50
-                        key = (color, isim, cx_bucket, cy_bucket)
-                        now_check = time.time()
+                # Sadece kare
+                if corners != 4:
+                    continue
 
-                        if key in seen_targets and now_check - seen_targets[key] < 2.0:
-                            continue
-                        
-                        seen_targets[key] = now_check
+                rect = cv2.minAreaRect(cnt)
+                width, height = rect[1]
+                if width <= 0 or height <= 0:
+                    continue
+                aspectRatio = max(width, height) / min(width, height)
+                if not (0.85 < aspectRatio < 1.15):
+                    continue  # kare değil, dikdörtgen
 
-                        queue.put({
-                            "color": color,
-                            "isim": isim,
-                            "cx": cx,
-                            "cy": cy
-                        })
-                        
-                        print(f"Tespit: {color} {isim} @ ({cx}, {cy})")
+                M = cv2.moments(cnt)
+                if M["m00"] == 0:
+                    continue
 
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
 
+                cx_bucket = cx // 50
+                cy_bucket = cy // 50
+                key = (color, cx_bucket, cy_bucket)
+                now_check = time.time()
+
+                if key in seen_targets and now_check - seen_targets[key] < 2.0:
+                    continue
+
+                seen_targets[key] = now_check
+                queue.put({"color": color, "cx": cx, "cy": cy})
+                print(f"Tespit: {color} kare @ ({cx}, {cy})")
+                
 # Getting telemetry info
 async def telemetry_task(drone):
     async for position in drone.telemetry.position():
@@ -156,62 +144,77 @@ async def attitude_task(drone):
 
 # Assigning missions BUT NOT STARTING
 async def mission_task(drone, queue):
-    waypoints = {}  # liste değil dict, key = renk
+    waypoints = {}  # key = color
+    ELLIPSE_POINTS = 8
+    ELLIPSE_RADIUS_M = 10.0  # hedef etrafında kaç metre yarıçap
+
     while True:
         try:
             target = queue.get_nowait()
         except Empty:
             await asyncio.sleep(0.05)
             continue
-        
+
         with telemetry_lock:
             tel = current_telemetry.copy()
-        
-        if None not in tel.values():
-            color = target["color"]
-            
-            # bu renk için zaten waypoint var mı
-            if color in waypoints:
-                await asyncio.sleep(0.05)
-                continue
-            
-            lat, lon = pixel_to_gps(tel["lat"], tel["lon"], tel["alt"], tel["yaw"], target["cx"], target["cy"])
-            
-            item = MissionItem(
-                latitude_deg=lat,
-                longitude_deg=lon,
+
+        if None in tel.values():
+            continue
+
+        color = target["color"]
+        if color in waypoints:
+            continue
+
+        center_lat, center_lon = pixel_to_gps(
+            tel["lat"], tel["lon"], tel["alt"], tel["yaw"],
+            target["cx"], target["cy"]
+        )
+
+        # Hedef merkezi etrafında elips wp dizisi oluştur
+        ellipse_items = []
+        for i in range(ELLIPSE_POINTS):
+            angle_rad = 2 * math.pi * i / ELLIPSE_POINTS
+            # Kuzey-güney ekseni biraz daha geniş (1.5x) → elips efekti
+            d_north = ELLIPSE_RADIUS_M * math.cos(angle_rad) * 1.5
+            d_east  = ELLIPSE_RADIUS_M * math.sin(angle_rad)
+
+            wp_lat = center_lat + (d_north / 111320)
+            wp_lon = center_lon + (d_east  / (111320 * math.cos(math.radians(center_lat))))
+
+            ellipse_items.append(MissionItem(
+                latitude_deg=wp_lat,
+                longitude_deg=wp_lon,
                 relative_altitude_m=tel["alt"],
-                speed_m_s=15.0,
+                speed_m_s=10.0,
                 is_fly_through=True,
                 gimbal_pitch_deg=float('nan'),
                 gimbal_yaw_deg=float('nan'),
                 camera_action=MissionItem.CameraAction.NONE,
                 loiter_time_s=float('nan'),
                 camera_photo_interval_s=float('nan'),
-                acceptance_radius_m=5.0,
+                acceptance_radius_m=3.0,
                 yaw_deg=float('nan'),
                 camera_photo_distance_m=float('nan'),
                 vehicle_action=MissionItem.VehicleAction.NONE
-            )
-            waypoints[color] = item
-            
-            try:
-                await drone.mission.upload_mission(MissionPlan(list(waypoints.values())))
-                print(f"✓ Upload OK: {color} {target['isim']} → {lat:.6f}, {lon:.6f}")
-            except Exception as e:
-                print(f"✗ Upload FAILED: {e}")
-                del waypoints[color]  # Başarısız olursa tekrar denensin
-                continue
-            
-            # Upload sonrası nefes aldır
-            await asyncio.sleep(1.0)
+            ))
 
-            try:
-                downloaded = await drone.mission.download_mission()
-                print(f"Pixhawk toplam waypoint: {len(downloaded.mission_items)}")
-            except Exception as e:
-                print(f"✗ Download FAILED: {e}")
+        waypoints[color] = ellipse_items
 
+        # Tüm renklerin wp'lerini düz listeye dök
+        all_items = []
+        for items in waypoints.values():
+            all_items.extend(items)
+
+        try:
+            await drone.mission.upload_mission(MissionPlan(all_items))
+            print(f"✓ Upload OK: {color} kare → merkez {center_lat:.6f}, {center_lon:.6f} | {ELLIPSE_POINTS} wp")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"✗ Upload FAILED: {e}")
+            del waypoints[color]
+
+        await asyncio.sleep(1.0)
 
 async def run():
     drone = System()
