@@ -339,12 +339,12 @@ def start_wfb_broadcast():
     # GStreamer pipeline
     gst_cmd = [
         "gst-launch-1.0", "-v",
-        "libcamerasrc", "!",
-        f"video/x-raw,width={WIDTH},height={HEIGHT},framerate={FPS}/1", "!",
-        "v4l2h264enc", "extra-controls=controls,video_bitrate=3000000", "!",
-        "video/x-h264,level=(string)4.1,profile=baseline", "!",
+        "tcpclientsrc", "!",
+        f"framerate={FPS}/1", "!",
+        "extra-controls=controls,video_bitrate=2000000", "!",
+        "!",
         "h264parse", "!",
-        "rtph264pay", "config-interval=1", "pt=96", "!",
+        "rtph264pay", "!",
         "udpsink", f"host=127.0.0.1", f"port={WFB_UDP_PORT}"
     ]
     
