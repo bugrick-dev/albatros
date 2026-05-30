@@ -1,0 +1,276 @@
+"""
+OpenCV: HSV renk tespiti, kare doğrulama, overlay ve video pipeline thread'i.
+FFmpeg decode/encode ve GStreamer süreçleri bu modülde başlatılır.
+"""
+import queue as _queue
+import subprocess
+import threading
+import time
+import cv2
+import numpy as np
+import config
+import state
+import geo
+
+
+# ==================== YARDIMCI FONKSİYONLAR ====================
+
+def is_square(contour):
+    """Konturun kareye yakın bir şekil olup olmadığını kontrol eder."""
+    perimeter = cv2.arcLength(contour, True)
+    approx    = cv2.approxPolyDP(contour, 0.04 * perimeter, True)
+    if len(approx) != config.SQUARE_CORNER_TOLERANCE:
+        return False
+    rect = cv2.minAreaRect(contour)
+    w, h = rect[1]
+    if w <= 0 or h <= 0:
+        return False
+    ratio = max(w, h) / min(w, h)
+    return config.ASPECT_RATIO_MIN < ratio < config.ASPECT_RATIO_MAX
+
+
+def _apply_morph(mask):
+    """Kapat + Aç morfoloji uygular — gürültüyü azaltır."""
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, state.kernel)
+    return cv2.morphologyEx(mask, cv2.MORPH_OPEN,  state.kernel)
+
+
+def _detect_square_in_mask(mask):
+    """
+    Maskede geçerli ilk kareyi arar.
+    Dönüş: (cx, cy, contour) veya None.
+    """
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if not (config.MIN_AREA < area < config.MAX_AREA):
+            continue
+        if not is_square(cnt):
+            continue
+        M = cv2.moments(cnt)
+        if M["m00"] == 0:
+            continue
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        return cx, cy, cnt
+    return None
+
+
+def _update_detection(mask, color_key, queue, queued_colors):
+    """
+    Maskeden kare tespit eder.
+    state.detected_targets güncellenir; detection_active ise kuyruk da beslenir.
+    """
+    result = _detect_square_in_mask(mask)
+    if result:
+        cx, cy, cnt = result
+        state.detected_targets[color_key] = {"cx": cx, "cy": cy, "contour": cnt}
+        if state.detection_active.is_set() and color_key not in queued_colors:
+            queue.put({"color": color_key, "cx": cx, "cy": cy})
+            queued_colors.add(color_key)
+            print(f"[VISION] *** {color_key.upper()} KARE TESPİT EDİLDİ *** "
+                  f"piksel=({cx},{cy}) — mission kuyruğuna eklendi")
+    else:
+        state.detected_targets[color_key] = None
+
+
+# ==================== ANA THREAD ====================
+
+def opencv_processing_thread(queue):
+    print("[VISION] Thread başlatıldı — 7s bekleniyor (rpicam-vid hazırlanıyor)...")
+    time.sleep(7)
+
+    # --- FFmpeg decode: TCP H264 → raw BGR ---
+    ffmpeg_decode_cmd = [
+        "ffmpeg",
+        "-fflags", "nobuffer",
+        "-flags", "low_delay",
+        "-probesize", "32",
+        "-analyzeduration", "0",
+        "-i", f"tcp://127.0.0.1:{config.RPICAM_TCP_PORT}",
+        "-f", "rawvideo", "-pix_fmt", "bgr24",
+        "-s", f"{config.WIDTH}x{config.HEIGHT}",
+        "-r", str(config.FPS),
+        "-",
+    ]
+    print(f"[VISION] FFmpeg decode başlatılıyor: {' '.join(ffmpeg_decode_cmd)}")
+    state.ffmpeg_decode_process = subprocess.Popen(
+        ffmpeg_decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    )
+    print(f"[VISION] FFmpeg decode başladı → PID={state.ffmpeg_decode_process.pid}")
+
+    # --- FFmpeg encode: raw BGR → H264 (RPi hardware) ---
+    ffmpeg_encode_cmd = [
+        "ffmpeg",
+        "-f", "rawvideo", "-pix_fmt", "bgr24",
+        "-s", f"{config.WIDTH}x{config.HEIGHT}",
+        "-r", str(config.FPS),
+        "-i", "-",
+        "-c:v", "h264_v4l2m2m", "-b:v", "2000k", "-g", "15",
+        "-flush_packets", "1",
+        "-f", "h264", "-",
+    ]
+    print(f"[VISION] FFmpeg encode başlatılıyor: {' '.join(ffmpeg_encode_cmd)}")
+    state.ffmpeg_encode_process = subprocess.Popen(
+        ffmpeg_encode_cmd,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    )
+    print(f"[VISION] FFmpeg encode başladı → PID={state.ffmpeg_encode_process.pid} (h264_v4l2m2m)")
+
+    # Encode yazımını ayrı thread'de yap — encoder meşgulse frame düş, OpenCV'yi bloklama
+    _encode_queue = _queue.Queue(maxsize=2)
+
+    def _encode_writer():
+        while True:
+            frame_bytes = _encode_queue.get()
+            if frame_bytes is None:
+                break
+            try:
+                state.ffmpeg_encode_process.stdin.write(frame_bytes)
+            except Exception:
+                pass
+
+    threading.Thread(target=_encode_writer, daemon=True).start()
+
+    # --- GStreamer: H264 → RTP → UDP → WFB-ng ---
+    def ffmpeg_to_gstreamer():
+        gst_cmd = [
+            "gst-launch-1.0", "fdsrc", "!",
+            "h264parse", "!",
+            "rtph264pay", "config-interval=1", "pt=96", "!",
+            "udpsink", "host=127.0.0.1", f"port={config.WFB_UDP_PORT}",
+        ]
+        print(f"[VISION] GStreamer başlatılıyor: {' '.join(gst_cmd)}")
+        state.gst_process = subprocess.Popen(
+            gst_cmd, stdin=state.ffmpeg_encode_process.stdout, stderr=subprocess.DEVNULL
+        )
+        print(f"[VISION] GStreamer başladı → PID={state.gst_process.pid}")
+        state.gst_process.wait()
+        print(f"[VISION] GStreamer süreci sonlandı (PID={state.gst_process.pid})")
+
+    threading.Thread(target=ffmpeg_to_gstreamer, daemon=True).start()
+
+    frame_size    = config.WIDTH * config.HEIGHT * 3
+    gps_data      = {}      # {color: (lat, lon)} — her renk için yalnızca bir kez hesaplanır
+    queued_colors = set()   # her renk yalnızca bir kez kuyruğa girer
+    frame_count   = 0
+    fps_time      = time.time()
+    current_fps   = 0
+    debug_timer   = time.time()
+
+    print(f"[VISION] Frame okuma döngüsü başladı — frame_size={frame_size} bytes")
+
+    while True:
+        try:
+            raw_frame = state.ffmpeg_decode_process.stdout.read(frame_size)
+
+            if len(raw_frame) != frame_size:
+                print(f"[VISION] Eksik frame: {len(raw_frame)}/{frame_size} byte — atlanıyor")
+                time.sleep(0.01)
+                continue
+
+            frame = np.frombuffer(raw_frame, dtype=np.uint8).reshape(
+                (config.HEIGHT, config.WIDTH, 3)
+            ).copy()
+
+            # FPS hesabı
+            frame_count += 1
+            now = time.time()
+            if now - fps_time >= 1.0:
+                current_fps = frame_count
+                frame_count = 0
+                fps_time    = now
+
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+            # Mavi kare tespiti
+            mask_blue = _apply_morph(cv2.inRange(hsv, config.BLUE_HSV_LOWER, config.BLUE_HSV_UPPER))
+            _update_detection(mask_blue, "mavi", queue, queued_colors)
+
+            # Kırmızı kare tespiti (iki HSV aralığı OR'lanır)
+            mask_red = _apply_morph(cv2.bitwise_or(
+                cv2.inRange(hsv, config.RED1_HSV_LOWER, config.RED1_HSV_UPPER),
+                cv2.inRange(hsv, config.RED2_HSV_LOWER, config.RED2_HSV_UPPER),
+            ))
+            _update_detection(mask_red, "kirmizi", queue, queued_colors)
+
+            # === OVERLAY ===
+            for color, data in state.detected_targets.items():
+                if data:
+                    box_color = (255, 100, 0) if color == "mavi" else (0, 0, 255)
+                    cv2.drawContours(frame, [data["contour"]], -1, box_color, 3)
+                    if color in gps_data:
+                        lat, lon = gps_data[color]
+                        cv2.putText(
+                            frame, f"{color.upper()}: {lat:.6f}, {lon:.6f}",
+                            (data["cx"] - 100, data["cy"] - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2,
+                        )
+
+            cv2.putText(frame, f"FPS: {current_fps}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            with state.telemetry_lock:
+                tel = state.current_telemetry.copy()
+
+            if tel["alt"]:
+                cv2.putText(frame, f"ALT: {tel['alt']:.1f}m", (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+            wp = state.current_wp
+            if wp["index"] is not None:
+                cv2.putText(frame, f"WP: {wp['index']}/{wp['total']}", (10, 90),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+            for color, label, pos, col_ok, col_no in [
+                ("mavi",    "MAVI: OK",    (config.WIDTH - 160, 30), (255, 100, 0), (128, 128, 128)),
+                ("kirmizi", "KIRMIZI: OK", (config.WIDTH - 160, 60), (0, 0, 255),   (128, 128, 128)),
+            ]:
+                detected = state.detected_targets[color]
+                cv2.putText(
+                    frame,
+                    label if detected else label.replace("OK", "--"),
+                    pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    col_ok if detected else col_no, 2,
+                )
+
+            try:
+                _encode_queue.put_nowait(frame.tobytes())
+            except _queue.Full:
+                pass  # encoder meşgul, bu frame'i düş
+
+            # GPS koordinatı hesapla — her renk için yalnızca bir kez
+            if None not in tel.values():
+                for color, data in state.detected_targets.items():
+                    if data and color not in gps_data:
+                        lat, lon = geo.pixel_to_gps(
+                            tel["lat"], tel["lon"], tel["alt"], tel["yaw"],
+                            data["cx"], data["cy"],
+                        )
+                        gps_data[color] = (lat, lon)
+                        print(f"[VISION] {color.upper()} GPS koordinatı hesaplandı: "
+                              f"({lat:.6f}, {lon:.6f})")
+
+            # Periyodik durum özeti (her 5 saniyede bir)
+            if now - debug_timer >= 5.0:
+                mavi_str = (
+                    f"({state.detected_targets['mavi']['cx']},{state.detected_targets['mavi']['cy']})"
+                    if state.detected_targets["mavi"] else "—"
+                )
+                kirmizi_str = (
+                    f"({state.detected_targets['kirmizi']['cx']},{state.detected_targets['kirmizi']['cy']})"
+                    if state.detected_targets["kirmizi"] else "—"
+                )
+                detection_str = "AKTİF" if state.detection_active.is_set() else "BEKLİYOR"
+                print(f"[VISION][STATUS] FPS={current_fps} | "
+                      f"mavi={mavi_str} kirmizi={kirmizi_str} | "
+                      f"tespit={detection_str} | kuyruk={queue.qsize()}")
+                if tel["lat"] is not None:
+                    print(f"[VISION][STATUS] Telemetri: "
+                          f"lat={tel['lat']:.6f} lon={tel['lon']:.6f} "
+                          f"alt={tel['alt']:.1f}m yaw={tel['yaw']:.1f}°")
+                debug_timer = now
+
+        except Exception as e:
+            print(f"[VISION] HATA: {e}")
+            time.sleep(0.1)

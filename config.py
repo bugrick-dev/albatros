@@ -1,0 +1,91 @@
+"""
+TEKNOFEST 2026 - Sabit Kanat - Görev 2
+Tüm sabitler ve konfigürasyon parametreleri.
+GCS planı kesinleşince SEARCH_START_WP ve SEARCH_LOOP_EXIT_WP güncellenmelidir.
+"""
+import numpy as np
+
+# --- Video ---
+WIDTH  = 640
+HEIGHT = 480
+FPS    = 30
+
+# --- Tespit alanı sınırları ---
+MIN_AREA = int(0.001 * WIDTH * HEIGHT)
+MAX_AREA = int(0.3   * WIDTH * HEIGHT)
+
+# --- HSV renk aralıkları (bireysel kanallar) ---
+BLUE_H_MIN, BLUE_H_MAX = 100, 130
+BLUE_S_MIN, BLUE_S_MAX =  80, 255
+BLUE_V_MIN, BLUE_V_MAX =  50, 255
+
+RED1_H_MIN, RED1_H_MAX =   0,  10
+RED2_H_MIN, RED2_H_MAX = 170, 180
+RED_S_MIN,  RED_S_MAX  =  80, 255
+RED_V_MIN,  RED_V_MAX  =  50, 255
+
+# --- HSV eşik dizileri (cv2.inRange'de doğrudan kullanılır) ---
+BLUE_HSV_LOWER = np.array([BLUE_H_MIN, BLUE_S_MIN, BLUE_V_MIN])
+BLUE_HSV_UPPER = np.array([BLUE_H_MAX, BLUE_S_MAX, BLUE_V_MAX])
+RED1_HSV_LOWER = np.array([RED1_H_MIN, RED_S_MIN,  RED_V_MIN])
+RED1_HSV_UPPER = np.array([RED1_H_MAX, RED_S_MAX,  RED_V_MAX])
+RED2_HSV_LOWER = np.array([RED2_H_MIN, RED_S_MIN,  RED_V_MIN])
+RED2_HSV_UPPER = np.array([RED2_H_MAX, RED_S_MAX,  RED_V_MAX])
+
+# --- Kare tespiti ---
+SQUARE_CORNER_TOLERANCE = 4
+ASPECT_RATIO_MIN = 0.7
+ASPECT_RATIO_MAX = 1.3
+
+# --- WFB-ng ---
+WFB_MAC      = "6c:4c:bc:0a:62:a0"
+WFB_KEY_PATH = "/home/albatros/gs.key"
+WFB_LINK_ID  = "7669206"
+WFB_CHANNEL  = 36
+
+# --- Port numaraları ---
+RPICAM_TCP_PORT = 8888
+FFMPEG_UDP_PORT = 9000
+WFB_UDP_PORT    = 5600
+
+# --- Uçuş bilgisayarı ---
+FC_PORT     = "/dev/ttyAMA3"
+FC_BAUDRATE = 115200
+
+# --- Kamera ---
+CAMERA_FOV_H = 62.2
+CAMERA_FOV_V = 48.8
+CAMERA_PITCH = 45.0
+
+# --- Servo (RPi GPIO) ---
+# Şartname: mavi hedefe kırmızı boyalı yük, kırmızı hedefe mavi boyalı yük
+SERVO_KIRMIZI_YUK_PIN = 18   # kırmızı boyalı yük → mavi hedefe
+SERVO_MAVI_YUK_PIN    = 23   # mavi boyalı yük    → kırmızı hedefe
+
+# --- Uçuş parametreleri ---
+DRONE_SPEED_MS             = 15.0
+DROP_TRIGGER_RADIUS_M      = 20
+SCAN_EXIT_DELAY_SEC        = 15
+SINGLE_TARGET_TIMEOUT_SEC  = 30
+FC_CONNECT_TIMEOUT_SEC     = 10   # FC bağlantısı kurulamazsa video-only moda geç
+
+# --- Tarama / drop hız yönetimi ---
+SEARCH_START_WP     = 4      # Bu WP'ye gelince tarama hızına geç (GCS planına göre ayarla)
+DETECTION_ACTIVE_WP = 4      # Bu WP'ye gelince tespit aktif olur (GCS planına göre ayarla)
+SEARCH_SPEED_MS     = 10.0   # Tarama hızı (m/s)
+DROP_SPEED_MS       = 10.0   # Yük bırakmadan önce hız (m/s)
+SEARCH_LOOP_EXIT_WP = 7      # DO_JUMP döngüsünden çıkış WP index — DO_JUMP'tan SONRAKİ WP olmalı
+
+# --- FC Servo (USE_FC_SERVO=True ise geçerli) ---
+USE_FC_SERVO        = True  # True → DO_SET_SERVO (FC çıkışı), False → RPi GPIO
+SERVO_KIRMIZI_FC_NO = 9      # FC servo kanalı — kırmızı yük
+SERVO_MAVI_FC_NO    = 10     # FC servo kanalı — mavi yük
+PWM_RELEASE         = 2000   # Servo release PWM
+PWM_NEUTRAL         = 1500   # Servo neutral PWM
+
+# --- MAVLink komut kodları (MAV_CMD_*) ---
+CMD_NAV_WAYPOINT    = 16
+CMD_CONDITION_DIST  = 114
+CMD_DO_CHANGE_SPEED = 178
+CMD_DO_SET_SERVO    = 183
+CMD_RTL             = 20
