@@ -32,10 +32,20 @@ import argparse
 import asyncio
 import json
 import os
+import signal
+import subprocess
 import sys
+import time
 
 sys.stdout.reconfigure(line_buffering=True)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+# SIGTERM'i (örn. `timeout`, `kill`, systemd stop) düzgün bir çıkışa çevir ki
+# mavsdk'nin atexit/​__del__ temizliği çalışıp mavsdk_server alt sürecini
+# öldürsün. Aksi halde SIGTERM Python'u atexit çalıştırmadan sonlandırır ve
+# mavsdk_server öksüz kalıp portu (FC_PORT) açık tutmaya devam eder — bir
+# sonraki çalıştırmada "port meşgul" hatasına yol açan asıl sebep budur.
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
 from mavsdk import System
 from mavsdk.param import ParamError
@@ -54,6 +64,43 @@ PARAM_NAMES = [
     "STAT_BOOTCNT",
     "BATT_CAPACITY",
 ]
+
+
+def free_stale_mavsdk_server(port):
+    """Önceki bir çalıştırma SIGKILL/bağlantı kopması gibi temiz olmayan bir
+    şekilde sonlandıysa, mavsdk'nin başlattığı mavsdk_server alt süreci
+    öksüz kalıp portu (TIOCEXCL ile) açık tutmaya devam edebilir — sonraki
+    çalıştırma "port meşgul" ile başarısız olur. Bağlanmadan önce yalnızca
+    mavsdk_server adlı öksüzleri temizle; portu başka biri (main.py,
+    serial-getty, GCS) tutuyorsa dokunmadan sadece uyar."""
+    try:
+        pids = subprocess.check_output(
+            ["fuser", port], stderr=subprocess.DEVNULL
+        ).split()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return
+
+    killed = False
+    for pid_bytes in pids:
+        pid = int(pid_bytes)
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                name = f.read().strip()
+        except OSError:
+            continue
+        if name == "mavsdk_server":
+            print(f"[TEST] ⚠ Öksüz mavsdk_server (PID {pid}) {port} portunu açık "
+                  f"tutuyor — sonlandırılıyor")
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed = True
+            except OSError:
+                pass
+        else:
+            print(f"[TEST] ⚠ {port} portu PID {pid} ({name}) tarafından açık — "
+                  f"MAVSDK bağlanamayabilir")
+    if killed:
+        time.sleep(0.5)
 
 
 async def wait_connected(drone, timeout=config.FC_CONNECT_TIMEOUT_SEC):
@@ -150,6 +197,9 @@ async def main(conn):
     print("HEARTBEAT + PARAMETRE OKUMA TESTİ (Cube Orange)")
     print(f"  FC : {conn}")
     print("=" * 60)
+
+    fc_port = conn.split("://", 1)[-1].rsplit(":", 1)[0]
+    free_stale_mavsdk_server(fc_port)
 
     drone = System()
     await drone.connect(system_address=conn)

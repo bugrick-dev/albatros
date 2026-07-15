@@ -9,6 +9,8 @@ import numpy as np
 WIDTH  = 640
 HEIGHT = 480
 FPS    = 30
+BITRATE = 1000000  # WFB FEC yedekliliğiyle (bkz. WFB_FEC_*) uyumlu düşürüldü
+INTRA   = 15        # paket kaybı sonrası hızlı toparlanma için sık keyframe
 
 # --- Tespit alanı sınırları ---
 MIN_AREA = int(0.001 * WIDTH * HEIGHT)
@@ -42,6 +44,15 @@ WFB_MAC      = "6c:4c:bc:0a:62:a0"
 WFB_KEY_PATH = "/home/albatros/gs.key"
 WFB_LINK_ID  = "7669206"
 WFB_CHANNEL  = 36
+WFB_MCS            = 0      # en dayanıklı modülasyon (BPSK, HT MCS0)
+WFB_BANDWIDTH      = 20     # MHz — dar bant, daha uzun menzil
+WFB_GUARD_INTERVAL = "long"
+WFB_LDPC           = 1
+WFB_FEC_K          = 4
+WFB_FEC_N          = 12     # 3x FEC yedekliliği — sahada ölçülüp doğrulandı
+# T3U Plus (RTL8812BU, 88x2bu) donanım tavanı: 3100 mBm kabul ediliyor,
+# 3200 mBm reddediliyor (region/reg-domain bu kartta gerçek gücü sınırlamıyor).
+WFB_TXPOWER_MBM    = 3100
 
 # --- Port numaraları ---
 RPICAM_TCP_PORT = 8888
@@ -49,8 +60,13 @@ FFMPEG_UDP_PORT = 9000
 WFB_UDP_PORT    = 5600
 
 # --- Uçuş bilgisayarı ---
+# Kök sebep GND bağlantısındaki temassızlıkmış (TX/RX doğruydu) — düzeltilince
+# TELEM2 üzerinden hem okuma hem yazma (param/mission) çalışmaya başladı.
+# FC SERIAL2_BAUD=921 (921600) — ArduPilot companion computer dokümantasyonunun
+# önerdiği tam hızlı değer, gereksiz overhead'den kaçınmak için GND düzeltilip
+# doğrulandıktan sonra buna geçildi.
 FC_PORT     = "/dev/ttyAMA3"
-FC_BAUDRATE = 115200
+FC_BAUDRATE = 921600
 
 # --- Kamera ---
 CAMERA_FOV_H = 62.2
@@ -74,18 +90,33 @@ SEARCH_START_WP     = 4      # Bu WP'ye gelince tarama hızına geç (GCS planı
 DETECTION_ACTIVE_WP = 4      # Bu WP'ye gelince tespit aktif olur (GCS planına göre ayarla)
 SEARCH_SPEED_MS     = 10.0   # Tarama hızı (m/s)
 DROP_SPEED_MS       = 10.0   # Yük bırakmadan önce hız (m/s)
-SEARCH_LOOP_EXIT_WP = 7      # DO_JUMP döngüsünden çıkış WP index — DO_JUMP'tan SONRAKİ WP olmalı
+SEARCH_LOOP_EXIT_WP = 7      # DO_JUMP'tan SONRAKİ WP index. Hedefler bulunduktan sonra bu index'ten
+                              # itibaren olan öğeler "iniş sekansı" sayılır ve yeni drop misyonuna
+                              # olduğu gibi eklenir (bkz. mission.build_and_start_drop_mission)
 
 # --- FC Servo (USE_FC_SERVO=True ise geçerli) ---
 USE_FC_SERVO        = True  # True → DO_SET_SERVO (FC çıkışı), False → RPi GPIO
-SERVO_KIRMIZI_FC_NO = 9      # FC servo kanalı — kırmızı yük
-SERVO_MAVI_FC_NO    = 10     # FC servo kanalı — mavi yük
-PWM_RELEASE         = 2000   # Servo release PWM
-PWM_NEUTRAL         = 1500   # Servo neutral PWM
+SERVO_KIRMIZI_FC_NO = 9      # FC servo kanalı — kırmızı yük (AUX1)
+SERVO_MAVI_FC_NO    = 10     # FC servo kanalı — mavi yük (AUX2)
+
+# Her servo kendi güvenli aralığıyla ayrı tanımlanıyor — sahada doğrulandı
+# (test_wp_mark_servo_release ile, 2026-07-15). İkisi de aynı yönde: PWM
+# azalınca açılıyor, artınca kapanıyor.
+PWM_KIRMIZI_RELEASE = 900    # kırmızı servo (AUX1) — açma
+PWM_KIRMIZI_NEUTRAL = 1750   # kırmızı servo (AUX1) — kapalı/nötr
+PWM_MAVI_RELEASE    = 900    # mavi servo (AUX2) — açma
+PWM_MAVI_NEUTRAL    = 1600   # mavi servo (AUX2) — kapalı/nötr
 
 # --- MAVLink komut kodları (MAV_CMD_*) ---
-CMD_NAV_WAYPOINT    = 16
-CMD_CONDITION_DIST  = 114
-CMD_DO_CHANGE_SPEED = 178
-CMD_DO_SET_SERVO    = 183
-CMD_RTL             = 20
+CMD_NAV_WAYPOINT     = 16
+CMD_NAV_LOITER_TURNS = 18
+CMD_CONDITION_DIST   = 114
+CMD_DO_CHANGE_SPEED  = 178
+CMD_DO_SET_SERVO     = 183
+CMD_RTL              = 20
+
+# --- Orbit test parametreleri (bkz. tests/test_mission_orbit_swap.py) ---
+# Yük bırakma yerine hedef üstünde dönüş test edilirken kullanılır.
+ORBIT_RADIUS_M   = 30.0   # hedef üstünde dönüş yarıçapı (m)
+ORBIT_TURNS      = 3      # hedef başına tur sayısı
+ORBIT_ALTITUDE_M = 60.0   # yaklaşma + loiter irtifası (relative alt, sabit)

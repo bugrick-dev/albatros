@@ -254,6 +254,7 @@ async def main(conn):
     # Telemetri arka planda akmaya başlar
     asyncio.create_task(mission.telemetry_task(drone))
     asyncio.create_task(mission.attitude_task(drone))
+    asyncio.create_task(mission.speed_track_task(drone))
 
     start_video_pipeline()
 

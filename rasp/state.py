@@ -14,7 +14,7 @@ target_queue = Queue()
 
 # --- Telemetri ---
 telemetry_lock    = threading.Lock()
-current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None}
+current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None, "speed": None}
 
 # --- Tespit edilen hedefler ---
 detected_targets = {"mavi": None, "kirmizi": None}

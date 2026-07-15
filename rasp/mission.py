@@ -1,13 +1,15 @@
 """
 MAVSDK görev yönetimi:
-  - Telemetri ve yaw akışları
+  - Telemetri, yaw ve hız akışları
   - Hız yönetimi (DO_CHANGE_SPEED)
-  - Arama döngüsünden çıkış (DO_JUMP exit)
-  - Drop misyonu oluşturma ve yükleme (mission_raw)
-  - GPIO drop tetikleme (USE_FC_SERVO=False durumu)
+  - Drop misyonu oluşturma ve yükleme (mission_raw) — yalnızca YÖNLENDİRME
+  - Canlı balistik drop tetikleme (drop_trigger_task): her telemetri tik'inde
+    güncel hız/irtifa ile calculate_drop_point() yeniden hesaplanır, doğru
+    anda USE_FC_SERVO'ya göre FC'ye DO_SET_SERVO gönderilir ya da GPIO tetiklenir.
 """
 import asyncio
 import json
+import math
 import time
 from queue import Empty
 from mavsdk.mission_raw import MissionItem as RawMissionItem
@@ -45,32 +47,67 @@ async def attitude_task(drone):
             print(f"[ATTITUDE] #{count}: yaw={attitude.yaw_deg:.1f}°")
 
 
-# ==================== GPIO DROP TETİKLEME ====================
+async def speed_track_task(drone):
+    """
+    Yer hızını (ground speed) sürekli günceller — drop_trigger_task'ın her
+    tik'te güncel hızla balistik drop noktasını yeniden hesaplayabilmesi için.
+    """
+    print("[SPEED_TRACK] Yer hızı akışı başlatıldı")
+    async for vel in drone.telemetry.velocity_ned():
+        speed = math.hypot(vel.north_m_s, vel.east_m_s)
+        with state.telemetry_lock:
+            state.current_telemetry["speed"] = speed
+
+
+# ==================== CANLI BALİSTİK DROP TETİKLEME ====================
 
 async def drop_trigger_task(drone, release_points):
     """
-    USE_FC_SERVO=False durumunda: GPS mesafesiyle GPIO servo tetikler.
-    Her 0.1 saniyede mesafeleri kontrol eder.
+    Her telemetri tik'inde GÜNCEL hız/irtifa/yaw ile calculate_drop_point()'i
+    yeniden hesaplar (hedefin kendisi rp['lat']/rp['lon']'da sabit tutulur,
+    balistik ofset her seferinde taze hesaplanır) — tespit anındaki eski/
+    varsayılan hıza güvenilmez. O anki konum canlı hesaplanan drop noktasına
+    DROP_TRIGGER_RADIUS_M'den yakınsa tetikler:
+      USE_FC_SERVO=True  → FC'ye DO_SET_SERVO komutu gönderilir (servo FC'de).
+      USE_FC_SERVO=False → RPi GPIO servo doğrudan tetiklenir.
     """
-    print(f"[DROP] GPIO trigger başlatıldı — {len(release_points)} release point izleniyor")
+    print(f"[DROP] Canlı balistik trigger başlatıldı — {len(release_points)} hedef izleniyor "
+          f"| USE_FC_SERVO={config.USE_FC_SERVO}")
     for i, rp in enumerate(release_points):
-        print(f"[DROP]   Hedef {i+1}: {rp['color'].upper()} → "
-              f"({rp['lat']:.6f},{rp['lon']:.6f}) alt={rp['alt']:.1f}m")
+        print(f"[DROP]   Hedef {i+1}: {rp['color'].upper()} → ({rp['lat']:.6f},{rp['lon']:.6f})")
 
     check_count = 0
     async for pos in drone.telemetry.position():
         check_count += 1
+        with state.telemetry_lock:
+            tel = state.current_telemetry.copy()
+        if tel["speed"] is None or tel["yaw"] is None:
+            await asyncio.sleep(0.05)
+            continue
+
         for rp in release_points:
             if rp["dropped"]:
                 continue
-            dist = geo.haversine(pos.latitude_deg, pos.longitude_deg, rp["lat"], rp["lon"])
+            release_lat, release_lon = geo.calculate_drop_point(
+                rp["lat"], rp["lon"], pos.relative_altitude_m, tel["speed"], tel["yaw"],
+            )
+            dist = geo.haversine(pos.latitude_deg, pos.longitude_deg, release_lat, release_lon)
             if check_count % 10 == 0:
-                print(f"[DROP] {rp['color'].upper()} mesafe: {dist:.1f}m "
-                      f"(eşik: {config.DROP_TRIGGER_RADIUS_M}m)")
+                print(f"[DROP] {rp['color'].upper()} canlı drop noktasına mesafe: {dist:.1f}m "
+                      f"(hız={tel['speed']:.1f}m/s alt={pos.relative_altitude_m:.1f}m | "
+                      f"eşik: {config.DROP_TRIGGER_RADIUS_M}m)")
             if dist < config.DROP_TRIGGER_RADIUS_M:
                 print(f"[DROP] *** {rp['color'].upper()} TETİKLENİYOR! "
                       f"mesafe={dist:.1f}m < {config.DROP_TRIGGER_RADIUS_M}m ***")
-                await servo.drop_payload(rp["color"])
+                if config.USE_FC_SERVO:
+                    servo_no = config.SERVO_KIRMIZI_FC_NO if rp["color"] == "mavi" else config.SERVO_MAVI_FC_NO
+                    release_pwm, neutral_pwm = _servo_pwm_for(servo_no)
+                    await drone.mavlink_direct.send_message(_make_servo_command(servo_no, release_pwm))
+                    await asyncio.sleep(0.5)
+                    await drone.mavlink_direct.send_message(_make_servo_command(servo_no, neutral_pwm))
+                    print(f"[DROP] ✓ FC'ye DO_SET_SERVO gönderildi: kanal={servo_no}")
+                else:
+                    await servo.drop_payload(rp["color"])
                 rp["dropped"] = True
                 print(f"[DROP] {rp['color'].upper()} bırakıldı ✓ "
                       f"(kalan: {sum(1 for r in release_points if not r['dropped'])})")
@@ -104,6 +141,36 @@ def _make_speed_command(speed_ms):
     )
 
 
+def _servo_pwm_for(servo_no):
+    """
+    Her servo kendi güvenli PWM aralığıyla ayrı tanımlı (sahada doğrulandı).
+    Dönüş: (release_pwm, neutral_pwm).
+    """
+    if servo_no == config.SERVO_MAVI_FC_NO:
+        return config.PWM_MAVI_RELEASE, config.PWM_MAVI_NEUTRAL
+    return config.PWM_KIRMIZI_RELEASE, config.PWM_KIRMIZI_NEUTRAL
+
+
+def _make_servo_command(servo_no, pwm):
+    """COMMAND_LONG / DO_SET_SERVO MAVLink mesajı oluşturur (canlı balistik drop tetikleme için)."""
+    return MavlinkMessage(
+        message_name="COMMAND_LONG",
+        system_id=255,
+        component_id=190,
+        target_system_id=1,
+        target_component_id=1,
+        fields_json=json.dumps({
+            "target_system": 1,
+            "target_component": 1,
+            "command": config.CMD_DO_SET_SERVO,
+            "confirmation": 0,
+            "param1": float(servo_no),
+            "param2": float(pwm),
+            "param3": 0.0, "param4": 0.0, "param5": 0.0, "param6": 0.0, "param7": 0.0,
+        })
+    )
+
+
 async def speed_management_task(drone):
     """
     Misyon ilerlemesini izler; SEARCH_START_WP'ye gelince
@@ -125,21 +192,6 @@ async def speed_management_task(drone):
             break
 
 
-# ==================== SEARCH LOOP ÇIKIŞI ====================
-
-async def exit_search_loop(drone):
-    """DO_JUMP döngüsünden çık: misyon item'ını SEARCH_LOOP_EXIT_WP'ye al."""
-    print(f"[MISSION] DO_JUMP döngüsünden çıkılıyor → "
-          f"set_current_mission_item({config.SEARCH_LOOP_EXIT_WP})")
-    try:
-        await drone.mission_raw.set_current_mission_item(config.SEARCH_LOOP_EXIT_WP)
-        print(f"[MISSION] ✓ Aktif WP artık {config.SEARCH_LOOP_EXIT_WP}")
-    except Exception as e:
-        print(f"[MISSION] ⚠ set_current_mission_item HATA: {e}")
-        print(f"[MISSION] ⚠ Devam ediliyor — FC'de misyon yüklü mü? "
-              f"SEARCH_LOOP_EXIT_WP={config.SEARCH_LOOP_EXIT_WP} doğru mu?")
-
-
 # ==================== DROP MİSYONU ====================
 
 def _make_mission_item(seq, command, param1=0.0, param2=0.0, param3=0.0, param4=0.0,
@@ -158,14 +210,17 @@ def _make_mission_item(seq, command, param1=0.0, param2=0.0, param3=0.0, param4=
 
 def _build_drop_items(release_points):
     """
-    Drop waypoint'lerini oluşturur.
+    Hedeflere YÖNLENDİRME waypoint'lerini oluşturur (NAV_WAYPOINT + hız
+    ayarları). Asıl drop tetikleme burada YOK — drop_trigger_task her
+    telemetri tik'inde güncel hız/irtifa ile balistik hesap yapıp doğru anda
+    tetikliyor (bkz. build_and_start_drop_mission), bu sayede tespit anındaki
+    eski/varsayılan hıza değil, bırakma anındaki gerçek hıza göre atılıyor.
     Seq geçici 0 — insert sonrası yeniden numaralandırılır.
     """
     items = []
     for i, rp in enumerate(release_points):
-        servo_no = config.SERVO_KIRMIZI_FC_NO if rp["color"] == "mavi" else config.SERVO_MAVI_FC_NO
-        print(f"[MISSION] === Drop öğeleri: Hedef {i+1} {rp['color'].upper()} "
-              f"({rp['lat']:.6f},{rp['lon']:.6f}) alt={rp['alt']:.1f}m servo={servo_no} ===")
+        print(f"[MISSION] === Yönlendirme öğesi: Hedef {i+1} {rp['color'].upper()} "
+              f"({rp['lat']:.6f},{rp['lon']:.6f}) alt={rp['alt']:.1f}m ===")
 
         items.append(_make_mission_item(
             0, config.CMD_DO_CHANGE_SPEED,
@@ -175,21 +230,6 @@ def _build_drop_items(release_points):
             0, config.CMD_NAV_WAYPOINT, param2=15.0,
             lat=rp["lat"], lon=rp["lon"], alt=rp["alt"], frame=3,
         ))
-
-        if config.USE_FC_SERVO:
-            items.append(_make_mission_item(
-                0, config.CMD_CONDITION_DIST,
-                param1=float(config.DROP_TRIGGER_RADIUS_M),
-            ))
-            items.append(_make_mission_item(
-                0, config.CMD_DO_SET_SERVO,
-                param1=float(servo_no), param2=float(config.PWM_RELEASE),
-            ))
-            items.append(_make_mission_item(
-                0, config.CMD_DO_SET_SERVO,
-                param1=float(servo_no), param2=float(config.PWM_NEUTRAL),
-            ))
-
         items.append(_make_mission_item(
             0, config.CMD_DO_CHANGE_SPEED,
             param1=1.0, param2=config.DRONE_SPEED_MS, param3=-1.0,
@@ -197,22 +237,34 @@ def _build_drop_items(release_points):
     return items
 
 
-async def build_and_insert_drop_mission(drone, release_points):
+async def build_and_start_drop_mission(drone, release_points):
     """
-    FC'deki mevcut misyonu indirir, drop waypoint'lerini SEARCH_LOOP_EXIT_WP'den
-    sonraya ekler, kalkış ve iniş sekansı korunur.
+    Eski misyonun ortasına item sıkıştırıp set_current_mission_item ile oraya
+    atlamak yerine TAMAMEN YENİ bir misyon oluşturur: drop waypoint'leri +
+    mevcut misyonun iniş sekansı (SEARCH_LOOP_EXIT_WP'den itibaren).
+
+    ArduPilot, misyon öğesi seq=0'ı ne yüklenirse yüklensin FC'nin kayıtlı
+    HOME konumuyla değiştirir (doğrulanmış davranış). Bu yüzden seq 0'a bir
+    HOME dolgu öğesi konur, gerçek navigasyon (drop + iniş) seq 1'den başlar
+    ve set_current_mission_item(1) ile FC doğrudan oraya yönlendirilir —
+    aksi halde ilk drop hedefi sessizce home ile değiştirilip atlanabilirdi.
     """
-    print(f"[MISSION] Mevcut misyon indiriliyor...")
+    print(f"[MISSION] Mevcut misyon indiriliyor (iniş WP'lerini almak için)...")
     existing = list(await drone.mission_raw.download_mission())
     print(f"[MISSION] {len(existing)} öğe indirildi")
+
+    landing_items = existing[config.SEARCH_LOOP_EXIT_WP:]
+    print(f"[MISSION] İniş sekansı: WP {config.SEARCH_LOOP_EXIT_WP}'den itibaren "
+          f"{len(landing_items)} öğe alındı")
 
     drop_items = _build_drop_items(release_points)
     print(f"[MISSION] {len(drop_items)} drop öğesi oluşturuldu | USE_FC_SERVO={config.USE_FC_SERVO}")
 
-    insert_at = config.SEARCH_LOOP_EXIT_WP + 1
-    merged    = existing[:insert_at] + drop_items + existing[insert_at:]
+    home_placeholder = _make_mission_item(0, config.CMD_NAV_WAYPOINT, frame=3)
+    new_mission = [home_placeholder] + drop_items + landing_items
 
-    # Tüm seq numaralarını sıfırdan yeniden düzenle
+    # Tüm seq numaralarını sıfırdan yeniden düzenle — item 0 = home dolgu,
+    # item 1 = ilk drop öğesi
     resequenced = [
         RawMissionItem(
             i,
@@ -223,25 +275,22 @@ async def build_and_insert_drop_mission(drone, release_points):
             item.x, item.y, item.z,
             item.mission_type,
         )
-        for i, item in enumerate(merged)
+        for i, item in enumerate(new_mission)
     ]
     print(f"[MISSION] Yeni misyon: {len(resequenced)} öğe "
-          f"({len(existing)} mevcut + {len(drop_items)} drop)")
+          f"(1 home dolgu + {len(drop_items)} drop + {len(landing_items)} iniş)")
 
     await drone.mission_raw.upload_mission(resequenced)
-    print("[MISSION] upload_mission() tamamlandı")
+    print("[MISSION] ✓ upload_mission() tamamlandı")
 
-    first_drop = insert_at
-    await drone.mission_raw.set_current_mission_item(first_drop)
-    print(f"[MISSION] ✓ Drop başlıyor WP {first_drop}'den — iniş sekansı korundu")
+    await drone.mission_raw.set_current_mission_item(1)
+    print("[MISSION] ✓ set_current_mission_item(1) — seq 0 (home) atlandı, ilk drop hedefi aktif")
 
     await drone.mission_raw.start_mission()
+    print("[MISSION] ✓ start_mission() — drop sekansı başladı (başa sıçrama yok)")
 
-    if not config.USE_FC_SERVO:
-        print("[MISSION] USE_FC_SERVO=False → GPIO drop_trigger_task başlatılıyor")
-        asyncio.create_task(drop_trigger_task(drone, release_points))
-    else:
-        print("[MISSION] USE_FC_SERVO=True → servo FC misyon öğesiyle tetiklenecek")
+    print(f"[MISSION] Canlı balistik drop_trigger_task başlatılıyor | USE_FC_SERVO={config.USE_FC_SERVO}")
+    asyncio.create_task(drop_trigger_task(drone, release_points))
 
 
 # ==================== WP TAKİBİ ====================
@@ -310,37 +359,26 @@ async def mission_task(drone, queue):
             target["cx"], target["cy"],
         )
 
-        release_lat, release_lon = geo.calculate_drop_point(
-            target_lat, target_lon, tel["alt"], config.DRONE_SPEED_MS, tel["yaw"],
-        )
-
+        # Balistik drop noktası burada HESAPLANMIYOR — tespit anındaki hız
+        # varsayımı bırakma anında geçersiz olabilir. Hedefin kendi GPS
+        # konumu saklanır, drop_trigger_task her tik'te güncel hızla
+        # calculate_drop_point()'i taze hesaplar.
         release_points.append({
             "color":   color,
-            "lat":     release_lat,
-            "lon":     release_lon,
+            "lat":     target_lat,
+            "lon":     target_lon,
             "alt":     tel["alt"],
             "dropped": False,
         })
         if first_detection_time is None:
             first_detection_time = time.time()
 
-        print(f"[MISSION] ✓ {color.upper()} release point kaydedildi: "
-              f"({release_lat:.6f},{release_lon:.6f}) — "
+        print(f"[MISSION] ✓ {color.upper()} hedef konumu kaydedildi: "
+              f"({target_lat:.6f},{target_lon:.6f}) — "
               f"{len(release_points)}/2 hedef toplandı")
 
     print(f"[MISSION] Tarama tamamlandı ({len(release_points)} hedef). "
           f"{config.SCAN_EXIT_DELAY_SEC}s bekleniyor...")
     await asyncio.sleep(config.SCAN_EXIT_DELAY_SEC)
 
-    print("[MISSION] Arama döngüsünden çıkılıyor...")
-    await exit_search_loop(drone)
-    print("[MISSION] 2s bekleniyor (FC'nin item değişikliğini işlemesi için)...")
-    await asyncio.sleep(2)
-
-    await build_and_insert_drop_mission(drone, release_points)
-
-    if not config.USE_FC_SERVO:
-        print("[MISSION] USE_FC_SERVO=False → GPIO drop_trigger_task başlatılıyor")
-        asyncio.create_task(drop_trigger_task(drone, release_points))
-    else:
-        print("[MISSION] USE_FC_SERVO=True → servo FC misyon öğesiyle tetiklenecek, ek task yok")
+    await build_and_start_drop_mission(drone, release_points)

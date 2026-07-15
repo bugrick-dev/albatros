@@ -44,8 +44,8 @@ def setup_monitor_mode():
         ["sudo", "ip",  "link", "set", iface, "down"],
         ["sudo", "iw",  "dev",  iface, "set", "monitor", "none"],
         ["sudo", "ip",  "link", "set", iface, "up"],
-        ["sudo", "iw",  "dev",  iface, "set", "channel", str(config.WFB_CHANNEL)],
-        ["sudo", "iw",  "dev",  iface, "set", "txpower", "fixed", "2000"],
+        ["sudo", "iw",  "dev",  iface, "set", "channel", str(config.WFB_CHANNEL), "HT20"],
+        ["sudo", "iw",  "dev",  iface, "set", "txpower", "fixed", str(config.WFB_TXPOWER_MBM)],
     ]
     for cmd in cmds:
         r = subprocess.run(cmd, check=False, capture_output=True, text=True)
@@ -65,7 +65,9 @@ def start_pipeline(iface):
     # WFB-ng
     wfb_cmd = (
         f"sudo wfb_tx -K {config.WFB_KEY_PATH} "
-        f"-i {config.WFB_LINK_ID} -p 0 -u {config.WFB_UDP_PORT} {iface}"
+        f"-i {config.WFB_LINK_ID} -p 0 -u {config.WFB_UDP_PORT} "
+        f"-M {config.WFB_MCS} -B {config.WFB_BANDWIDTH} -G {config.WFB_GUARD_INTERVAL} "
+        f"-L {config.WFB_LDPC} -k {config.WFB_FEC_K} -n {config.WFB_FEC_N} {iface}"
     )
     print(f"[PIPELINE] wfb_tx komutu: {wfb_cmd}")
     state.wfb_process = subprocess.Popen(wfb_cmd, shell=True, stderr=subprocess.DEVNULL)
@@ -76,7 +78,7 @@ def start_pipeline(iface):
     rpicam_cmd = (
         f"rpicam-vid -t 0 --inline --codec h264 "
         f"--width {config.WIDTH} --height {config.HEIGHT} --framerate {config.FPS} "
-        f"--bitrate 2000000 --intra 30 "
+        f"--bitrate {config.BITRATE} --intra {config.INTRA} "
         f"--listen -o tcp://127.0.0.1:{config.RPICAM_TCP_PORT}"
     )
     print(f"[PIPELINE] rpicam-vid komutu: {rpicam_cmd}")
