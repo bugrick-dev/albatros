@@ -43,7 +43,8 @@ ASPECT_RATIO_MAX = 1.3
 WFB_MAC      = "6c:4c:bc:0a:62:a0"
 WFB_KEY_PATH = "/home/albatros/gs.key"
 WFB_LINK_ID  = "7669206"
-WFB_CHANNEL  = 36
+WFB_CHANNEL  = 157   # UNII-3, daha az yoğun — kart 88x2bu.conf'ta rtw_regd_src=1/rtw_country_code=US
+                      # gerektiriyor, aksi halde sürücü bu kanalı kilitler (2026-07-26 doğrulandı)
 WFB_MCS            = 0      # en dayanıklı modülasyon (BPSK, HT MCS0)
 WFB_BANDWIDTH      = 20     # MHz — dar bant, daha uzun menzil
 WFB_GUARD_INTERVAL = "long"

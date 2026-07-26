@@ -81,12 +81,16 @@ def opencv_processing_thread(queue):
     time.sleep(7)
 
     # --- FFmpeg decode: TCP H264 → raw BGR ---
+    # -r (giriş framerate ipucu) -i'den ONCE sart: aksi halde probesize/analyzeduration
+    # cok kucuk oldugu icin ffmpeg gercek framerate'i tahmin edemiyor ve neredeyse
+    # tum kareleri "drop" ediyor (2026-07-26 sahada bulunup dogrulandi).
     ffmpeg_decode_cmd = [
         "ffmpeg",
         "-fflags", "nobuffer",
         "-flags", "low_delay",
         "-probesize", "32",
         "-analyzeduration", "0",
+        "-r", str(config.FPS),
         "-i", f"tcp://127.0.0.1:{config.RPICAM_TCP_PORT}",
         "-f", "rawvideo", "-pix_fmt", "bgr24",
         "-s", f"{config.WIDTH}x{config.HEIGHT}",
@@ -94,28 +98,34 @@ def opencv_processing_thread(queue):
         "-",
     ]
     print(f"[VISION] FFmpeg decode başlatılıyor: {' '.join(ffmpeg_decode_cmd)}")
+    ffmpeg_decode_stderr = open("/home/albatros/logs/ffmpeg_decode.log", "wb")
     state.ffmpeg_decode_process = subprocess.Popen(
-        ffmpeg_decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        ffmpeg_decode_cmd, stdout=subprocess.PIPE, stderr=ffmpeg_decode_stderr
     )
     print(f"[VISION] FFmpeg decode başladı → PID={state.ffmpeg_decode_process.pid}")
 
-    # --- FFmpeg encode: raw BGR → H264 (RPi hardware) ---
+    # --- FFmpeg encode: raw BGR → H264 (yazilimsal) ---
+    # Pi 5'te bcm2835-codec gibi ayri bir H264 donanim encode blogu yok (video19
+    # sadece HEVC decode) - h264_v4l2m2m "Could not find a valid device" hatasi
+    # veriyordu (2026-07-26 sahada bulunup dogrulandi). libx264 yerine kullanildi.
     ffmpeg_encode_cmd = [
         "ffmpeg",
         "-f", "rawvideo", "-pix_fmt", "bgr24",
         "-s", f"{config.WIDTH}x{config.HEIGHT}",
         "-r", str(config.FPS),
         "-i", "-",
-        "-c:v", "h264_v4l2m2m", "-b:v", "2000k", "-g", "15",
+        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+        "-b:v", "2000k", "-g", "15",
         "-flush_packets", "1",
         "-f", "h264", "-",
     ]
     print(f"[VISION] FFmpeg encode başlatılıyor: {' '.join(ffmpeg_encode_cmd)}")
+    ffmpeg_encode_stderr = open("/home/albatros/logs/ffmpeg_encode.log", "wb")
     state.ffmpeg_encode_process = subprocess.Popen(
         ffmpeg_encode_cmd,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=ffmpeg_encode_stderr
     )
-    print(f"[VISION] FFmpeg encode başladı → PID={state.ffmpeg_encode_process.pid} (h264_v4l2m2m)")
+    print(f"[VISION] FFmpeg encode başladı → PID={state.ffmpeg_encode_process.pid} (libx264)")
 
     # Encode yazımını ayrı thread'de yap — encoder meşgulse frame düş, OpenCV'yi bloklama
     _encode_queue = _queue.Queue(maxsize=2)
