@@ -16,17 +16,29 @@ import geo
 # ==================== YARDIMCI FONKSİYONLAR ====================
 
 def is_square(contour):
-    """Konturun kareye yakın bir şekil olup olmadığını kontrol eder."""
+    """
+    Konturun kareye yakın bir şekil olup olmadığını kontrol eder.
+    4 köşe + en-boy oranı tek başına altıgen/üçgeni elemeye yetmiyor (ikisinin de
+    bounding box'ı kareye yakın çıkabiliyor) — bu yüzden doluluk oranı (kontur
+    alanı / bounding box alanı) da kontrol ediliyor: kare ~0.9-1.0, altıgen
+    ~0.65-0.87, üçgen ~0.5 (2026-07-26 sahada altıgen/üçgen yanlış tespiti sonrası
+    eklendi).
+    """
     perimeter = cv2.arcLength(contour, True)
-    approx    = cv2.approxPolyDP(contour, 0.04 * perimeter, True)
+    approx    = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
     if len(approx) != config.SQUARE_CORNER_TOLERANCE:
+        return False
+    if not cv2.isContourConvex(approx):
         return False
     rect = cv2.minAreaRect(contour)
     w, h = rect[1]
     if w <= 0 or h <= 0:
         return False
     ratio = max(w, h) / min(w, h)
-    return config.ASPECT_RATIO_MIN < ratio < config.ASPECT_RATIO_MAX
+    if not (config.ASPECT_RATIO_MIN < ratio < config.ASPECT_RATIO_MAX):
+        return False
+    extent = cv2.contourArea(contour) / (w * h)
+    return extent > config.SQUARE_MIN_EXTENT
 
 
 def _apply_morph(mask):

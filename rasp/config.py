@@ -17,6 +17,9 @@ MIN_AREA = int(0.001 * WIDTH * HEIGHT)
 MAX_AREA = int(0.3   * WIDTH * HEIGHT)
 
 # --- HSV renk aralıkları (bireysel kanallar) ---
+# Gerçek yarışma malzemesinin (branda vb.) tam tonu henüz bilinmediği için
+# geniş aralıkta bırakıldı (2026-07-26) — malzeme netleşince gerçek örnekle
+# (HSV tuner widget'ıyla) daraltılacak.
 BLUE_H_MIN, BLUE_H_MAX = 100, 130
 BLUE_S_MIN, BLUE_S_MAX =  80, 255
 BLUE_V_MIN, BLUE_V_MAX =  50, 255
@@ -38,6 +41,10 @@ RED2_HSV_UPPER = np.array([RED2_H_MAX, RED_S_MAX,  RED_V_MAX])
 SQUARE_CORNER_TOLERANCE = 4
 ASPECT_RATIO_MIN = 0.7
 ASPECT_RATIO_MAX = 1.3
+# Doluluk oranı (kontur alanı / bounding box alanı): kare ~0.9-1.0, altıgen ~0.65-0.87,
+# üçgen ~0.5 — yarışma alanındaki altıgen/üçgen şekilleri kesin olarak elemek için
+# (4 köşeye yaklaşma + en-boy oranı tek başına bunları ayırt edemiyor, 2026-07-26).
+SQUARE_MIN_EXTENT = 0.85
 
 # --- WFB-ng ---
 WFB_MAC      = "6c:4c:bc:0a:62:a0"
