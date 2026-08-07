@@ -40,7 +40,11 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, target_cx, target_cy):
 
     total_pitch = camera_pitch_rad + offset_angle_y
     dist_y      = alt * math.tan(total_pitch)
-    dist_x      = (alt / math.cos(total_pitch)) * math.tan(offset_angle_x)
+    # NOT: cos(offset_angle_y) çarpanı olmadan dist_x, hedef dikey merkezden
+    # uzaklaştıkça (üstte/altta) 1/cos(offset_angle_y) oranında ŞİŞER — tam
+    # pinhole projeksiyonunda dist_x = alt*tan(ox)*cos(oy)/cos(total_pitch)
+    # (2026-08-07: sahada ölçülen sistematik hata sonrası bulundu/düzeltildi).
+    dist_x      = (alt / math.cos(total_pitch)) * math.tan(offset_angle_x) * math.cos(offset_angle_y)
     log.info(f"[GEO][pixel_to_gps] Zemine projeksiyon: ileri={dist_y:.2f}m sağ={dist_x:.2f}m")
 
     yaw_rad      = math.radians(yaw_deg)
