@@ -16,6 +16,9 @@ target_queue = Queue()
 telemetry_lock    = threading.Lock()
 current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None, "speed": None}
 
+# --- FC bağlantı durumu (HUD icin) ---
+fc_connected = False
+
 # --- Tespit edilen hedefler ---
 detected_targets = {"mavi": None, "kirmizi": None}
 
@@ -31,6 +34,9 @@ rpicam_process        = None
 gst_process           = None
 ffmpeg_decode_process = None
 ffmpeg_encode_process = None
+
+# --- Kapanis sinyali (thread'lerin duzgun sonlanmasi icin) ---
+shutdown_requested = threading.Event()
 
 # --- Servo PWM nesneleri ---
 servo_kirmizi_pwm = None

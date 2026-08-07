@@ -1,26 +1,29 @@
 """RPi GPIO servo kontrolü — yük bırakma mekanizması."""
 import asyncio
+import logging
 import time
 import RPi.GPIO as GPIO
 import config
 import state
 
+log = logging.getLogger("servo")
+
 
 def init_servo():
-    print("[SERVO] GPIO servo başlatılıyor...")
+    log.info("[SERVO] GPIO servo başlatılıyor...")
     GPIO.setmode(GPIO.BCM)
 
-    GPIO.setup(config.SERVO_KIRMIZI_YUK_PIN, GPIO.OUT)
+    GPIO.setup(config.SERVO_KIRMIZI_YUK_PIN, GPIO.OUT, initial=GPIO.LOW)
     state.servo_kirmizi_pwm = GPIO.PWM(config.SERVO_KIRMIZI_YUK_PIN, 50)
     state.servo_kirmizi_pwm.start(7.5)
-    print(f"[SERVO] Kırmızı yük → GPIO {config.SERVO_KIRMIZI_YUK_PIN} | 50Hz PWM başladı (duty=7.5%)")
+    log.info(f"[SERVO] Kırmızı yük → GPIO {config.SERVO_KIRMIZI_YUK_PIN} | 50Hz PWM başladı (duty=7.5%)")
 
-    GPIO.setup(config.SERVO_MAVI_YUK_PIN, GPIO.OUT)
+    GPIO.setup(config.SERVO_MAVI_YUK_PIN, GPIO.OUT, initial=GPIO.LOW)
     state.servo_mavi_pwm = GPIO.PWM(config.SERVO_MAVI_YUK_PIN, 50)
     state.servo_mavi_pwm.start(7.5)
-    print(f"[SERVO] Mavi yük    → GPIO {config.SERVO_MAVI_YUK_PIN} | 50Hz PWM başladı (duty=7.5%)")
+    log.info(f"[SERVO] Mavi yük    → GPIO {config.SERVO_MAVI_YUK_PIN} | 50Hz PWM başladı (duty=7.5%)")
 
-    print("[SERVO] ✓ Tüm servolar nötr konumda hazır")
+    log.info("[SERVO] ✓ Tüm servolar nötr konumda hazır")
 
 
 def _drop_payload_sync(hedef_rengi):
@@ -35,33 +38,33 @@ def _drop_payload_sync(hedef_rengi):
         pwm = state.servo_mavi_pwm
         yuk = "MAVİ"
 
-    print(f"[SERVO] {yuk} boyalı yük bırakma başladı (hedef={hedef_rengi.upper()})")
+    log.info(f"[SERVO] {yuk} boyalı yük bırakma başladı (hedef={hedef_rengi.upper()})")
     if not pwm:
-        print(f"[SERVO] HATA: {yuk} PWM nesnesi None — init_servo() çağrıldı mı?")
+        log.info(f"[SERVO] HATA: {yuk} PWM nesnesi None — init_servo() çağrıldı mı?")
         return
 
-    print(f"[SERVO] duty → 12.5% (bırak konumu)")
+    log.info(f"[SERVO] duty → 12.5% (bırak konumu)")
     pwm.ChangeDutyCycle(12.5)
     time.sleep(0.5)
     pwm.ChangeDutyCycle(7.5)
-    print(f"[SERVO] duty → 7.5% (nötr) | {yuk} boyalı yük bırakıldı ✓")
+    log.info(f"[SERVO] duty → 7.5% (nötr) | {yuk} boyalı yük bırakıldı ✓")
 
 
 async def drop_payload(hedef_rengi):
     """Async wrapper — event loop'u bloklamaz."""
-    print(f"[SERVO] drop_payload() async çağrıldı: hedef={hedef_rengi}")
+    log.info(f"[SERVO] drop_payload() async çağrıldı: hedef={hedef_rengi}")
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _drop_payload_sync, hedef_rengi)
-    print(f"[SERVO] drop_payload() tamamlandı: hedef={hedef_rengi}")
+    log.info(f"[SERVO] drop_payload() tamamlandı: hedef={hedef_rengi}")
 
 
 def cleanup_servo():
-    print("[SERVO] Temizleniyor...")
+    log.info("[SERVO] Temizleniyor...")
     if state.servo_kirmizi_pwm:
         state.servo_kirmizi_pwm.stop()
-        print(f"[SERVO] GPIO {config.SERVO_KIRMIZI_YUK_PIN} durduruldu")
+        log.info(f"[SERVO] GPIO {config.SERVO_KIRMIZI_YUK_PIN} durduruldu")
     if state.servo_mavi_pwm:
         state.servo_mavi_pwm.stop()
-        print(f"[SERVO] GPIO {config.SERVO_MAVI_YUK_PIN} durduruldu")
+        log.info(f"[SERVO] GPIO {config.SERVO_MAVI_YUK_PIN} durduruldu")
     GPIO.cleanup()
-    print("[SERVO] ✓ GPIO temizlendi")
+    log.info("[SERVO] ✓ GPIO temizlendi")

@@ -2,6 +2,7 @@
 OpenCV: HSV renk tespiti, kare doğrulama, overlay ve video pipeline thread'i.
 FFmpeg decode/encode ve GStreamer süreçleri bu modülde başlatılır.
 """
+import logging
 import queue as _queue
 import subprocess
 import threading
@@ -11,6 +12,8 @@ import numpy as np
 import config
 import state
 import geo
+
+log = logging.getLogger("vision")
 
 
 # ==================== YARDIMCI FONKSİYONLAR ====================
@@ -80,7 +83,7 @@ def _update_detection(mask, color_key, queue, queued_colors):
         if state.detection_active.is_set() and color_key not in queued_colors:
             queue.put({"color": color_key, "cx": cx, "cy": cy})
             queued_colors.add(color_key)
-            print(f"[VISION] *** {color_key.upper()} KARE TESPİT EDİLDİ *** "
+            log.info(f"[VISION] *** {color_key.upper()} KARE TESPİT EDİLDİ *** "
                   f"piksel=({cx},{cy}) — mission kuyruğuna eklendi")
     else:
         state.detected_targets[color_key] = None
@@ -88,9 +91,32 @@ def _update_detection(mask, color_key, queue, queued_colors):
 
 # ==================== ANA THREAD ====================
 
+
+def _wait_for_tcp_listen(port, timeout=15, interval=0.2):
+    """rpicam-vid TCP portu dinlemeye baslayana kadar bekler (baglanti KURMADAN kontrol eder,
+    aksi halde --listen tek seferlik accept slotunu tuketebilir)."""
+    start = time.time()
+    while time.time() - start < timeout:
+        if state.shutdown_requested.is_set():
+            log.info("[VISION] Kapanış sinyali alındı — port bekleme iptal edildi")
+            return False
+        try:
+            out = subprocess.run(["ss", "-tln"], capture_output=True, text=True, timeout=1)
+            if f":{port} " in out.stdout:
+                log.info(f"[VISION] ✓ Port {port} dinlemede — devam ediliyor")
+                return True
+        except Exception:
+            pass
+        time.sleep(interval)
+    log.info(f"[VISION] ⚠ Port {port} {timeout}s icinde dinlemeye gecmedi, yine de devam ediliyor")
+    return False
+
 def opencv_processing_thread(queue):
-    print("[VISION] Thread başlatıldı — 7s bekleniyor (rpicam-vid hazırlanıyor)...")
-    time.sleep(7)
+    log.info("[VISION] Thread başlatıldı — rpicam-vid TCP portu bekleniyor...")
+    _wait_for_tcp_listen(config.RPICAM_TCP_PORT, timeout=25)
+    if state.shutdown_requested.is_set():
+        log.info("[VISION] Kapanış sinyali alındı — pipeline başlatılmadan çıkılıyor")
+        return
 
     # --- FFmpeg decode: TCP H264 → raw BGR ---
     # -r (giriş framerate ipucu) -i'den ONCE sart: aksi halde probesize/analyzeduration
@@ -109,12 +135,12 @@ def opencv_processing_thread(queue):
         "-r", str(config.FPS),
         "-",
     ]
-    print(f"[VISION] FFmpeg decode başlatılıyor: {' '.join(ffmpeg_decode_cmd)}")
+    log.info(f"[VISION] FFmpeg decode başlatılıyor: {' '.join(ffmpeg_decode_cmd)}")
     ffmpeg_decode_stderr = open("/home/albatros/logs/ffmpeg_decode.log", "wb")
     state.ffmpeg_decode_process = subprocess.Popen(
         ffmpeg_decode_cmd, stdout=subprocess.PIPE, stderr=ffmpeg_decode_stderr
     )
-    print(f"[VISION] FFmpeg decode başladı → PID={state.ffmpeg_decode_process.pid}")
+    log.info(f"[VISION] FFmpeg decode başladı → PID={state.ffmpeg_decode_process.pid}")
 
     # --- FFmpeg encode: raw BGR → H264 (yazilimsal) ---
     # Pi 5'te bcm2835-codec gibi ayri bir H264 donanim encode blogu yok (video19
@@ -131,13 +157,13 @@ def opencv_processing_thread(queue):
         "-flush_packets", "1",
         "-f", "h264", "-",
     ]
-    print(f"[VISION] FFmpeg encode başlatılıyor: {' '.join(ffmpeg_encode_cmd)}")
+    log.info(f"[VISION] FFmpeg encode başlatılıyor: {' '.join(ffmpeg_encode_cmd)}")
     ffmpeg_encode_stderr = open("/home/albatros/logs/ffmpeg_encode.log", "wb")
     state.ffmpeg_encode_process = subprocess.Popen(
         ffmpeg_encode_cmd,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=ffmpeg_encode_stderr
     )
-    print(f"[VISION] FFmpeg encode başladı → PID={state.ffmpeg_encode_process.pid} (libx264)")
+    log.info(f"[VISION] FFmpeg encode başladı → PID={state.ffmpeg_encode_process.pid} (libx264)")
 
     # Encode yazımını ayrı thread'de yap — encoder meşgulse frame düş, OpenCV'yi bloklama
     _encode_queue = _queue.Queue(maxsize=2)
@@ -162,13 +188,18 @@ def opencv_processing_thread(queue):
             "rtph264pay", "config-interval=1", "pt=96", "!",
             "udpsink", "host=127.0.0.1", f"port={config.WFB_UDP_PORT}",
         ]
-        print(f"[VISION] GStreamer başlatılıyor: {' '.join(gst_cmd)}")
+        log.info(f"[VISION] GStreamer başlatılıyor: {' '.join(gst_cmd)}")
         state.gst_process = subprocess.Popen(
-            gst_cmd, stdin=state.ffmpeg_encode_process.stdout, stderr=subprocess.DEVNULL
+            gst_cmd, stdin=state.ffmpeg_encode_process.stdout,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
         )
-        print(f"[VISION] GStreamer başladı → PID={state.gst_process.pid}")
+        log.info(f"[VISION] GStreamer başladı → PID={state.gst_process.pid}")
+        for line in state.gst_process.stdout:
+            log.info(f"[GST] {line.rstrip()}")
+            if "New clock" in line:
+                log.info("[VISION] ✓ Video/WFB pipeline PLAYING — aktarım fiilen başladı")
         state.gst_process.wait()
-        print(f"[VISION] GStreamer süreci sonlandı (PID={state.gst_process.pid})")
+        log.info(f"[VISION] GStreamer süreci sonlandı (PID={state.gst_process.pid})")
 
     threading.Thread(target=ffmpeg_to_gstreamer, daemon=True).start()
 
@@ -180,14 +211,14 @@ def opencv_processing_thread(queue):
     current_fps   = 0
     debug_timer   = time.time()
 
-    print(f"[VISION] Frame okuma döngüsü başladı — frame_size={frame_size} bytes")
+    log.info(f"[VISION] Frame okuma döngüsü başladı — frame_size={frame_size} bytes")
 
     while True:
         try:
             raw_frame = state.ffmpeg_decode_process.stdout.read(frame_size)
 
             if len(raw_frame) != frame_size:
-                print(f"[VISION] Eksik frame: {len(raw_frame)}/{frame_size} byte — atlanıyor")
+                log.info(f"[VISION] Eksik frame: {len(raw_frame)}/{frame_size} byte — atlanıyor")
                 time.sleep(0.01)
                 continue
 
@@ -244,6 +275,22 @@ def opencv_processing_thread(queue):
                 cv2.putText(frame, f"WP: {wp['index']}/{wp['total']}", (10, 90),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
+            fc_ok = state.fc_connected
+            cv2.putText(
+                frame,
+                f"FC: {'BAGLI' if fc_ok else 'BAGLI DEGIL'} ({config.FC_BAUDRATE})",
+                (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                (0, 255, 0) if fc_ok else (0, 0, 255), 2,
+            )
+
+            rf_ok = state.wfb_process is not None and state.wfb_process.poll() is None
+            cv2.putText(
+                frame,
+                f"RF: {'OK' if rf_ok else 'KOPTU'}",
+                (10, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                (0, 255, 0) if rf_ok else (0, 0, 255), 2,
+            )
+
             for color, label, pos, col_ok, col_no in [
                 ("mavi",    "MAVI: OK",    (config.WIDTH - 160, 30), (255, 100, 0), (128, 128, 128)),
                 ("kirmizi", "KIRMIZI: OK", (config.WIDTH - 160, 60), (0, 0, 255),   (128, 128, 128)),
@@ -270,11 +317,15 @@ def opencv_processing_thread(queue):
                             data["cx"], data["cy"],
                         )
                         gps_data[color] = (lat, lon)
-                        print(f"[VISION] {color.upper()} GPS koordinatı hesaplandı: "
+                        log.info(f"[VISION] {color.upper()} GPS koordinatı hesaplandı: "
                               f"({lat:.6f}, {lon:.6f})")
 
             # Periyodik durum özeti (her 5 saniyede bir)
             if now - debug_timer >= 5.0:
+                try:
+                    cv2.imwrite("/home/albatros/logs/hud_preview.jpg", frame)
+                except Exception:
+                    pass
                 mavi_str = (
                     f"({state.detected_targets['mavi']['cx']},{state.detected_targets['mavi']['cy']})"
                     if state.detected_targets["mavi"] else "—"
@@ -284,15 +335,15 @@ def opencv_processing_thread(queue):
                     if state.detected_targets["kirmizi"] else "—"
                 )
                 detection_str = "AKTİF" if state.detection_active.is_set() else "BEKLİYOR"
-                print(f"[VISION][STATUS] FPS={current_fps} | "
+                log.info(f"[VISION][STATUS] FPS={current_fps} | "
                       f"mavi={mavi_str} kirmizi={kirmizi_str} | "
                       f"tespit={detection_str} | kuyruk={queue.qsize()}")
                 if tel["lat"] is not None:
-                    print(f"[VISION][STATUS] Telemetri: "
+                    log.info(f"[VISION][STATUS] Telemetri: "
                           f"lat={tel['lat']:.6f} lon={tel['lon']:.6f} "
                           f"alt={tel['alt']:.1f}m yaw={tel['yaw']:.1f}°")
                 debug_timer = now
 
         except Exception as e:
-            print(f"[VISION] HATA: {e}")
+            log.info(f"[VISION] HATA: {e}")
             time.sleep(0.1)

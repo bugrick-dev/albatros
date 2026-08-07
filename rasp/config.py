@@ -3,6 +3,8 @@ TEKNOFEST 2026 - Sabit Kanat - Görev 2
 Tüm sabitler ve konfigürasyon parametreleri.
 GCS planı kesinleşince SEARCH_START_WP ve SEARCH_LOOP_EXIT_WP güncellenmelidir.
 """
+from pathlib import Path
+
 import numpy as np
 
 # --- Video ---
@@ -68,13 +70,29 @@ FFMPEG_UDP_PORT = 9000
 WFB_UDP_PORT    = 5600
 
 # --- Uçuş bilgisayarı ---
-# Kök sebep GND bağlantısındaki temassızlıkmış (TX/RX doğruydu) — düzeltilince
-# TELEM2 üzerinden hem okuma hem yazma (param/mission) çalışmaya başladı.
-# FC SERIAL2_BAUD=921 (921600) — ArduPilot companion computer dokümantasyonunun
-# önerdiği tam hızlı değer, gereksiz overhead'den kaçınmak için GND düzeltilip
-# doğrulandıktan sonra buna geçildi.
-FC_PORT     = "/dev/ttyAMA3"
-FC_BAUDRATE = 921600
+# TELEM2 jumper kablolaması havada GND temassızlığına bağlı bağlantı kopmalarına
+# yol açtı → Pixhawk'ın kendi USB portu Pi 5'in USB-A soketine doğrudan bağlanıyor.
+# Bu, TELEM2/SERIAL2'den bağımsız ayrı bir MAVLink kanalı — FC tarafında parametre
+# değişikliği gerekmez. FC güç modülünden beslenmeye devam eder, USB yalnızca veri hattı.
+FC_BAUDRATE = 115200  # USB CDC-ACM gerçek baud'u yok sayar, mavsdk bağlantı string'i için gerekli
+
+
+def _resolve_fc_port():
+    """FC'nin USB-seri cihaz yolunu döndürür.
+
+    /dev/ttyACM0 gibi sabit bir isim yerine /dev/serial/by-id/ kullanılır: başka bir
+    USB-seri cihaz (GPS, adaptör vb.) daha önce takılırsa ACM numarası kayabilir,
+    by-id ise cihazın USB seri numarasına bağlı olduğu için sabit kalır.
+    """
+    by_id_dir = Path("/dev/serial/by-id")
+    if by_id_dir.is_dir():
+        candidates = sorted(by_id_dir.iterdir())
+        if candidates:
+            return str(candidates[0])
+    return "/dev/ttyACM0"
+
+
+FC_PORT = _resolve_fc_port()
 
 # --- Kamera ---
 CAMERA_FOV_H = 62.2
