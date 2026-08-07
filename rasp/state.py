@@ -19,6 +19,9 @@ current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None, "speed"
 # --- FC bağlantı durumu (HUD icin) ---
 fc_connected = False
 
+# --- FC yeniden bağlanma döngüsü zaten çalışıyor mu (çakışan görev başlatmayı önler) ---
+fc_reconnecting = False
+
 # --- Tespit edilen hedefler ---
 detected_targets = {"mavi": None, "kirmizi": None}
 

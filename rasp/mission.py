@@ -25,9 +25,40 @@ log = logging.getLogger("mission")
 
 # ==================== FC BAĞLANTI DURUMU ====================
 
+async def _fc_reconnect_loop(drone):
+    """
+    Bağlantı koptuğunda (ör. kalibrasyon sonrası FC reboot atılması — USB
+    CDC-ACM cihazı kısa süreliğine kaybolup by-id sembolik linki aynı yoldan
+    geri gelir) periyodik olarak drone.connect()'i tekrar çağırır.
+
+    Sadece TEK bir döngü aynı anda çalışsın diye state.fc_reconnecting ile
+    korunur — art arda gelen connection_state() olayları ikinci bir döngü
+    başlatmasın.
+    """
+    if state.fc_reconnecting:
+        return
+    state.fc_reconnecting = True
+    attempt = 0
+    try:
+        while not state.fc_connected and not state.shutdown_requested.is_set():
+            attempt += 1
+            log.info(f"[FC] Yeniden bağlanma denemesi #{attempt} "
+                     f"(serial://{config.FC_PORT}:{config.FC_BAUDRATE})...")
+            try:
+                await drone.connect(system_address=f"serial://{config.FC_PORT}:{config.FC_BAUDRATE}")
+            except Exception as e:
+                log.info(f"[FC] Yeniden bağlanma denemesi HATA: {e}")
+            await asyncio.sleep(config.FC_RECONNECT_INTERVAL_SEC)
+        if state.fc_connected:
+            log.info(f"[FC] ✓ Yeniden bağlantı başarılı ({attempt} deneme sonrası)")
+    finally:
+        state.fc_reconnecting = False
+
+
 async def fc_connection_task(drone):
     """FC bağlantısını surekli izler (HUD icin) — ilk baglanti sonrası kopma/
-    geri gelme de burada yakalanir, main.py'deki tek seferlik kontrolden farklı."""
+    geri gelme de burada yakalanir, main.py'deki tek seferlik kontrolden farklı.
+    Bağlantı koparsa _fc_reconnect_loop ile otomatik yeniden bağlanma dener."""
     log.info("[FC] Bağlantı durumu izleyici başlatıldı")
     async for conn in drone.core.connection_state():
         was_connected = state.fc_connected
@@ -35,7 +66,8 @@ async def fc_connection_task(drone):
         if conn.is_connected and not was_connected:
             log.info("[FC] ✓ Bağlantı kuruldu")
         elif not conn.is_connected and was_connected:
-            log.info("[FC] ⚠ Bağlantı KOPTU")
+            log.info("[FC] ⚠ Bağlantı KOPTU — yeniden bağlanma denenecek")
+            asyncio.create_task(_fc_reconnect_loop(drone))
 
 
 # ==================== TELEMETRİ ====================

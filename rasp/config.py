@@ -110,6 +110,8 @@ DROP_TRIGGER_RADIUS_M      = 20
 SCAN_EXIT_DELAY_SEC        = 15
 SINGLE_TARGET_TIMEOUT_SEC  = 30
 FC_CONNECT_TIMEOUT_SEC     = 10   # FC bağlantısı kurulamazsa video-only moda geç
+FC_RECONNECT_INTERVAL_SEC  = 3    # Bağlantı koptuğunda (ör. kalibrasyon sonrası FC reboot)
+                                   # yeniden deneme aralığı — bkz. mission.fc_connection_task
 
 # --- Tarama / drop hız yönetimi ---
 SEARCH_START_WP     = 4      # Bu WP'ye gelince tarama hızına geç (GCS planına göre ayarla)
