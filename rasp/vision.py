@@ -211,6 +211,27 @@ def opencv_processing_thread(queue):
     current_fps   = 0
     debug_timer   = time.time()
 
+    # Kalibrasyon varsa distorsiyon düzeltme haritası BİR KEZ hesaplanır (her
+    # frame'de cv2.undistort çağırmak yerine cv2.remap kullanmak için — çok
+    # daha ucuz). camera_matrix hem eski hem yeni matris olarak verildiği için
+    # fx/fy/cx/cy (dolayısıyla geo.pixel_to_gps'teki açı hesabı) düzeltilmiş
+    # frame'de de GEÇERLİ kalır (bkz. config.py CAMERA_CALIBRATED).
+    undistort_map1 = undistort_map2 = None
+    if config.CAMERA_CALIBRATED:
+        camera_matrix = np.array([
+            [config.CAMERA_FX, 0, config.CAMERA_CX],
+            [0, config.CAMERA_FY, config.CAMERA_CY],
+            [0, 0, 1],
+        ])
+        dist_coeffs = np.array(config.CAMERA_DIST_COEFFS)
+        undistort_map1, undistort_map2 = cv2.initUndistortRectifyMap(
+            camera_matrix, dist_coeffs, None, camera_matrix,
+            (config.WIDTH, config.HEIGHT), cv2.CV_16SC2,
+        )
+        log.info("[VISION] ✓ Kamera kalibrasyonu aktif — frame'ler distorsiyon düzeltmesinden geçirilecek")
+    else:
+        log.info("[VISION] ⚠ Kamera kalibrasyonu YOK — ham (distorsiyonlu) frame kullanılıyor")
+
     log.info(f"[VISION] Frame okuma döngüsü başladı — frame_size={frame_size} bytes")
 
     while True:
@@ -225,6 +246,9 @@ def opencv_processing_thread(queue):
             frame = np.frombuffer(raw_frame, dtype=np.uint8).reshape(
                 (config.HEIGHT, config.WIDTH, 3)
             ).copy()
+
+            if undistort_map1 is not None:
+                frame = cv2.remap(frame, undistort_map1, undistort_map2, cv2.INTER_LINEAR)
 
             # FPS hesabı
             frame_count += 1

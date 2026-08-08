@@ -1,0 +1,5 @@
+# Cihaza özel kalibrasyon/kalibrasyon yardımcı dosyaları — her fiziksel
+# kamera farklı, git'e girmemeli (gs.key gibi, bkz. rasp/tools/camera_calibrate.py)
+rasp/camera_calib.json
+rasp/tools/chessboard_pattern.png
+rasp/tools/last_capture.jpg

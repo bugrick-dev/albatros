@@ -26,17 +26,27 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, target_cx, target_cy):
           f"alt={alt:.1f}m yaw={yaw_deg:.1f}° piksel=({target_cx},{target_cy})")
 
     camera_pitch_rad = math.radians(config.CAMERA_PITCH)
-    fov_x_rad        = math.radians(config.CAMERA_FOV_H)
-    fov_y_rad        = math.radians(config.CAMERA_FOV_V)
 
-    delta_x_pixel = target_cx - config.WIDTH  / 2
-    delta_y_pixel = config.HEIGHT / 2 - target_cy
-    log.info(f"[GEO][pixel_to_gps] Merkeze göre piksel ofseti: dx={delta_x_pixel:.1f} dy={delta_y_pixel:.1f}")
+    if config.CAMERA_CALIBRATED:
+        # Gerçek kalibrasyondan fx/fy/cx/cy ile TAM (yaklaşıksız) pinhole açısı.
+        # vision.py, frame'i HSV maskelemeden önce cv2.remap ile zaten distorsiyonu
+        # düzeltiyor (aynı camera_matrix'i newCameraMatrix olarak kullanıyor), bu
+        # yüzden burada ayrıca undistortPoints çağırmaya gerek yok — target_cx/cy
+        # zaten düzeltilmiş frame'den geliyor.
+        offset_angle_x = math.atan((target_cx - config.CAMERA_CX) / config.CAMERA_FX)
+        offset_angle_y = math.atan((config.CAMERA_CY - target_cy) / config.CAMERA_FY)
+    else:
+        # Yedek: kalibrasyon yok — doğrusal FOV/piksel yaklaşıklığı (bkz.
+        # config.py CAMERA_FOV_H/V notu, kenarlara doğru gerçek açıdan sapar).
+        fov_x_rad = math.radians(config.CAMERA_FOV_H)
+        fov_y_rad = math.radians(config.CAMERA_FOV_V)
+        delta_x_pixel = target_cx - config.WIDTH  / 2
+        delta_y_pixel = config.HEIGHT / 2 - target_cy
+        offset_angle_x = delta_x_pixel * (fov_x_rad / config.WIDTH)
+        offset_angle_y = delta_y_pixel * (fov_y_rad / config.HEIGHT)
 
-    offset_angle_x = delta_x_pixel * (fov_x_rad / config.WIDTH)
-    offset_angle_y = delta_y_pixel * (fov_y_rad / config.HEIGHT)
     log.info(f"[GEO][pixel_to_gps] Açısal ofset: ax={math.degrees(offset_angle_x):.3f}° "
-          f"ay={math.degrees(offset_angle_y):.3f}°")
+          f"ay={math.degrees(offset_angle_y):.3f}° (kalibreli={config.CAMERA_CALIBRATED})")
 
     total_pitch = camera_pitch_rad + offset_angle_y
     dist_y      = alt * math.tan(total_pitch)

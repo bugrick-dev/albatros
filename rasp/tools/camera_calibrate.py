@@ -166,7 +166,13 @@ def capture_calibration_images():
 
             preview = frame.copy()
             cv2.drawChessboardCorners(preview, (BOARD_COLS, BOARD_ROWS), corners_refined, found)
-            cv2.imwrite(str(TOOLS_DIR / "last_capture.jpg"), cv2.cvtColor(preview, cv2.COLOR_RGB2BGR))
+            # NOT: Picamera2 "RGB888" istese de veri fiilen BGR sırasında geliyor
+            # (bilinen bir picamera2 tuhaflığı) — burada TEKRAR RGB2BGR uygulamak
+            # kanalları bir daha ters çevirip kırmızı/maviyi karıştırıyordu (yalnızca
+            # bu önizleme JPG'sini etkiler; gri tonlamalı köşe tespiti — dolayısıyla
+            # kalibrasyon sonuçları — satranç tahtası siyah-beyaz olduğu için bundan
+            # etkilenmez, 2026-08-07 sahada fark edildi/düzeltildi).
+            cv2.imwrite(str(TOOLS_DIR / "last_capture.jpg"), preview)
 
             log(f"✓ Görüntü {len(objpoints)}/{CHESSBOARD_COUNT} kabul edildi "
                 f"— tahtayı FARKLI bir açı/konuma hareket ettir")

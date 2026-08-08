@@ -3,6 +3,7 @@ TEKNOFEST 2026 - Sabit Kanat - Görev 2
 Tüm sabitler ve konfigürasyon parametreleri.
 GCS planı kesinleşince SEARCH_START_WP ve SEARCH_LOOP_EXIT_WP güncellenmelidir.
 """
+import json
 from pathlib import Path
 
 import numpy as np
@@ -95,9 +96,33 @@ def _resolve_fc_port():
 FC_PORT = _resolve_fc_port()
 
 # --- Kamera ---
+# CAMERA_FOV_H/V: yalnızca camera_calib.json YOKSA (kalibrasyon yapılmamış
+# cihaz) kullanılan yedek/varsayılan değerler — Pi Camera V2 spek değerleri,
+# bu sistemdeki imx477 (HQ Camera, değiştirilebilir lens) için GERÇEĞİ
+# yansıtmaz. Her cihaz rasp/tools/camera_calibrate.py ile kalibre edilip
+# kendi camera_calib.json'unu üretmeli (bkz. aşağıdaki yükleme bloğu) —
+# ölçülen gerçek FOV bu iki kamerada ~36°/27.5° çıktı, 62.2°/48.8° değil
+# (2026-08-07 sahada bulundu, bkz. geo.py pixel_to_gps).
 CAMERA_FOV_H = 62.2
 CAMERA_FOV_V = 48.8
 CAMERA_PITCH = 45.0
+
+# --- Kamera kalibrasyonu (cihaza özel, git'e girmez — bkz. tools/camera_calibrate.py) ---
+CAMERA_CALIB_PATH = Path(__file__).parent / "camera_calib.json"
+CAMERA_CALIBRATED = False
+CAMERA_FX = CAMERA_FY = CAMERA_CX = CAMERA_CY = None
+CAMERA_DIST_COEFFS = None
+if CAMERA_CALIB_PATH.is_file():
+    try:
+        _calib = json.loads(CAMERA_CALIB_PATH.read_text())
+        CAMERA_FX          = _calib["fx"]
+        CAMERA_FY          = _calib["fy"]
+        CAMERA_CX          = _calib["cx"]
+        CAMERA_CY          = _calib["cy"]
+        CAMERA_DIST_COEFFS = _calib["dist_coeffs"]
+        CAMERA_CALIBRATED  = True
+    except Exception:
+        pass  # bozuk/eksik dosya — FOV tabanlı yedek hesaba düş
 
 # --- Servo (RPi GPIO) ---
 # Şartname: mavi hedefe kırmızı boyalı yük, kırmızı hedefe mavi boyalı yük
