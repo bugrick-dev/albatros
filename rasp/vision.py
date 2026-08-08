@@ -332,14 +332,21 @@ def opencv_processing_thread(queue):
             except _queue.Full:
                 pass  # encoder meşgul, bu frame'i düş
 
-            # GPS koordinatı hesapla — her renk için yalnızca bir kez
+            # GPS koordinatı hesapla — her renk için yalnızca bir kez.
+            # pixel_to_gps() yüksek roll'da (bank) None dönebilir (bkz. geo.py,
+            # config.MAX_ROLL_FOR_DETECTION_DEG) — o durumda color HENÜZ
+            # gps_data'ya eklenmez, bir sonraki (daha düz) frame'de tekrar denenir.
             if None not in tel.values():
                 for color, data in state.detected_targets.items():
                     if data and color not in gps_data:
-                        lat, lon = geo.pixel_to_gps(
+                        result = geo.pixel_to_gps(
                             tel["lat"], tel["lon"], tel["alt"], tel["yaw"],
+                            tel["roll"], tel["pitch"],
                             data["cx"], data["cy"],
                         )
+                        if result is None:
+                            continue
+                        lat, lon = result
                         gps_data[color] = (lat, lon)
                         log.info(f"[VISION] {color.upper()} GPS koordinatı hesaplandı: "
                               f"({lat:.6f}, {lon:.6f})")

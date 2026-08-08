@@ -87,14 +87,20 @@ async def telemetry_task(drone):
 
 
 async def attitude_task(drone):
-    log.info("[ATTITUDE] Yaw akışı başlatıldı")
+    """Yaw + roll + pitch akışı — roll/pitch, pixel_to_gps()'in tespit anındaki
+    gerçek uçak duruşunu (özellikle bank/roll) hesaba katabilmesi için gerekli
+    (bkz. geo.pixel_to_gps, 2026-08-08: roll bankında tespit hatası bulundu/düzeltildi)."""
+    log.info("[ATTITUDE] Yaw/roll/pitch akışı başlatıldı")
     count = 0
     async for attitude in drone.telemetry.attitude_euler():
         with state.telemetry_lock:
-            state.current_telemetry["yaw"] = attitude.yaw_deg
+            state.current_telemetry["yaw"]   = attitude.yaw_deg
+            state.current_telemetry["roll"]  = attitude.roll_deg
+            state.current_telemetry["pitch"] = attitude.pitch_deg
         count += 1
         if count % 50 == 0:
-            log.info(f"[ATTITUDE] #{count}: yaw={attitude.yaw_deg:.1f}°")
+            log.info(f"[ATTITUDE] #{count}: yaw={attitude.yaw_deg:.1f}° "
+                     f"roll={attitude.roll_deg:.1f}° pitch={attitude.pitch_deg:.1f}°")
 
 
 async def speed_track_task(drone):
@@ -428,10 +434,20 @@ async def mission_task(drone, queue):
             continue
 
         log.info(f"[MISSION] {color.upper()} işleniyor | telemetri: {tel}")
-        target_lat, target_lon = geo.pixel_to_gps(
+        result = geo.pixel_to_gps(
             tel["lat"], tel["lon"], tel["alt"], tel["yaw"],
+            tel["roll"], tel["pitch"],
             target["cx"], target["cy"],
         )
+        if result is None:
+            # Yüksek roll (bank) ya da dejenere projeksiyon — bu tespiti şimdi
+            # işleme, kuyruğa geri koy, uçak düzelince tekrar denenecek.
+            log.info(f"[MISSION] {color.upper()} REDDEDİLDİ (roll={tel['roll']:.1f}°) — "
+                     f"hedef geri kuyruğa alınıyor")
+            queue.put(target)
+            await asyncio.sleep(0.5)
+            continue
+        target_lat, target_lon = result
 
         # Balistik drop noktası burada HESAPLANMIYOR — tespit anındaki hız
         # varsayımı bırakma anında geçersiz olabilir. Hedefin kendi GPS

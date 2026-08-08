@@ -203,7 +203,7 @@ async def collect_two_targets():
 
             seen_colors.add(color)
             target_lat, target_lon = geo.pixel_to_gps(
-                tel["lat"], tel["lon"], tel["alt"], tel["yaw"], cx, cy,
+                tel["lat"], tel["lon"], tel["alt"], tel["yaw"], tel["roll"], tel["pitch"], cx, cy,
             )
             # Balistik drop noktası burada hesaplanmıyor — mission.drop_trigger_task
             # her tik'te güncel hızla taze hesaplıyor, burada hedefin kendi

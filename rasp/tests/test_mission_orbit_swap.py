@@ -223,7 +223,7 @@ async def collect_two_targets():
 
         seen_colors.add(color)
         target_lat, target_lon = geo.pixel_to_gps(
-            tel["lat"], tel["lon"], tel["alt"], tel["yaw"], item["cx"], item["cy"],
+            tel["lat"], tel["lon"], tel["alt"], tel["yaw"], tel["roll"], tel["pitch"], item["cx"], item["cy"],
         )
         targets.append({
             "color": color, "lat": target_lat, "lon": target_lon, "alt": tel["alt"],

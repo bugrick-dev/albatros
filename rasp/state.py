@@ -14,7 +14,7 @@ target_queue = Queue()
 
 # --- Telemetri ---
 telemetry_lock    = threading.Lock()
-current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None, "speed": None}
+current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None, "roll": None, "pitch": None, "speed": None}
 
 # --- FC bağlantı durumu (HUD icin) ---
 fc_connected = False

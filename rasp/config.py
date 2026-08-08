@@ -107,6 +107,13 @@ CAMERA_FOV_H = 62.2
 CAMERA_FOV_V = 48.8
 CAMERA_PITCH = 45.0
 
+# --- Roll/pitch toleransı (bkz. geo.pixel_to_gps) ---
+# Bu açıyı aşan roll'da tespit REDDEDİLİR (GPS hesabı yapılmaz, kuyruğa
+# eklenmez) — yüksek bank açısında piksel->GPS projeksiyonu ufka yaklaşıp
+# aşırı büyük/dejenere mesafeler üretebiliyor (simülasyonla doğrulandı,
+# 2026-08-08: 30°+ roll'da köşe pikselleri 100-1000+ m hataya çıkabiliyor).
+MAX_ROLL_FOR_DETECTION_DEG = 30.0
+
 # --- Kamera kalibrasyonu (cihaza özel, git'e girmez — bkz. tools/camera_calibrate.py) ---
 CAMERA_CALIB_PATH = Path(__file__).parent / "camera_calib.json"
 CAMERA_CALIBRATED = False
