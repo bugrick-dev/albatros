@@ -15,6 +15,13 @@ FPS    = 30
 BITRATE = 1000000  # WFB FEC yedekliliğiyle (bkz. WFB_FEC_*) uyumlu düşürüldü
 INTRA   = 15        # paket kaybı sonrası hızlı toparlanma için sık keyframe
 
+# Kamera fiziksel olarak ters monte (kablo yukarı çıkacak şekilde) — rpicam-vid
+# seviyesinde düzeltiliyor (yazılımsal cv2.rotate yerine): tespit algoritması
+# (renk/şekil) ve CAMERA_PITCH rotasyondan etkilenmiyor, ham görüntü zaten
+# doğru yönde gelir. DEĞİŞTİRİLİRSE kamera kalibrasyonu YENİDEN yapılmalı —
+# calibrate script'i o anki yönelimi ölçüyor (2026-08-09).
+CAMERA_ROTATION_DEG = 180
+
 # --- Tespit alanı sınırları ---
 MIN_AREA = int(0.001 * WIDTH * HEIGHT)
 MAX_AREA = int(0.3   * WIDTH * HEIGHT)

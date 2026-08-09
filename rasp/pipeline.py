@@ -178,6 +178,7 @@ def start_pipeline(iface):
         f"rpicam-vid -t 0 --inline --codec h264 "
         f"--width {config.WIDTH} --height {config.HEIGHT} --framerate {config.FPS} "
         f"--bitrate {config.BITRATE} --intra {config.INTRA} "
+        f"--rotation {config.CAMERA_ROTATION_DEG} "
         f"--listen -o tcp://127.0.0.1:{config.RPICAM_TCP_PORT}"
     )
     log.info(f"[PIPELINE] rpicam-vid komutu: {rpicam_cmd}")
