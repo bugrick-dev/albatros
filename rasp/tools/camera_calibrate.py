@@ -109,10 +109,25 @@ def restart_service():
 
 def capture_calibration_images():
     from picamera2 import Picamera2
+    from libcamera import Transform
+
+    # ÖNEMLİ: üretimde rpicam-vid, config.CAMERA_ROTATION_DEG ile başlatılıyor
+    # (bkz. pipeline.py) — kalibrasyon de AYNI yönelimde çekilmezse fx/fy/cx/cy
+    # üretimdeki (döndürülmüş) frame'lerle uyuşmaz. Picamera2 kendi --rotation
+    # bayrağını kullanmadığı için burada libcamera Transform ile eşitleniyor
+    # (2026-08-09: kamera ters monte kararı sonrası eklendi).
+    if config.CAMERA_ROTATION_DEG == 180:
+        transform = Transform(hflip=1, vflip=1)
+    elif config.CAMERA_ROTATION_DEG == 0:
+        transform = Transform()
+    else:
+        raise ValueError(f"CAMERA_ROTATION_DEG={config.CAMERA_ROTATION_DEG} desteklenmiyor (0 veya 180 olmalı)")
+    log(f"Kalibrasyon, üretimdekiyle AYNI yönelimde çekilecek: CAMERA_ROTATION_DEG={config.CAMERA_ROTATION_DEG}")
 
     picam2 = Picamera2()
     cfg = picam2.create_video_configuration(
-        main={"size": (config.WIDTH, config.HEIGHT), "format": "RGB888"}
+        main={"size": (config.WIDTH, config.HEIGHT), "format": "RGB888"},
+        transform=transform,
     )
     picam2.configure(cfg)
     picam2.start()
