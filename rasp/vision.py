@@ -50,6 +50,29 @@ def _apply_morph(mask):
     return cv2.morphologyEx(mask, cv2.MORPH_OPEN,  state.kernel)
 
 
+# ==================== YAYIN (stream_frame) KOORDİNAT DÖNÜŞÜMÜ ====================
+# Tespit native (ham) frame'de yapılıyor (kalibrasyon + geo.py matematiği için,
+# bkz. config.py CAMERA_ROTATION_DEG notu), ama overlay YAYINA giden çevrilmiş
+# kareye çiziliyor — HUD metinleri de doğru yönde görünsün diye. Bu yüzden
+# native koordinatlardan (kontur, cx/cy) gelen her şey önce stream uzayına
+# çevrilmeli; sabit pozisyonlu HUD öğeleri (FPS, ALT, vb.) zaten stream_frame
+# üzerine çizildiği için dönüşüme ihtiyaç duymaz.
+
+def _to_stream_xy(x, y):
+    if config.CAMERA_ROTATION_DEG == 180:
+        return config.WIDTH - 1 - x, config.HEIGHT - 1 - y
+    return x, y
+
+
+def _to_stream_contour(contour):
+    if config.CAMERA_ROTATION_DEG == 180:
+        c = contour.copy()
+        c[:, :, 0] = config.WIDTH - 1 - c[:, :, 0]
+        c[:, :, 1] = config.HEIGHT - 1 - c[:, :, 1]
+        return c
+    return contour
+
+
 def _detect_square_in_mask(mask):
     """
     Maskede geçerli ilk kareyi arar.
@@ -271,37 +294,48 @@ def opencv_processing_thread(queue):
             ))
             _update_detection(mask_red, "kirmizi", queue, queued_colors)
 
-            # === OVERLAY ===
+            # Tespit (yukarıda) hep native frame'de yapıldı — kalibrasyon ve
+            # geo.py matematiği için gerekli. Overlay'in TAMAMI ise (kontur +
+            # tüm HUD metinleri) buradan itibaren stream_frame'e (yayına giden,
+            # gerekirse çevrilmiş kare) çiziliyor — böylece HUD metinleri de
+            # video içeriğiyle AYNI, doğru yönde görünür.
+            stream_frame = (
+                cv2.rotate(frame, cv2.ROTATE_180)
+                if config.CAMERA_ROTATION_DEG == 180 else frame
+            )
+
+            # === OVERLAY (stream_frame üzerine, native koordinatlar dönüştürülerek) ===
             for color, data in state.detected_targets.items():
                 if data:
                     box_color = (255, 100, 0) if color == "mavi" else (0, 0, 255)
-                    cv2.drawContours(frame, [data["contour"]], -1, box_color, 3)
+                    cv2.drawContours(stream_frame, [_to_stream_contour(data["contour"])], -1, box_color, 3)
                     if color in gps_data:
                         lat, lon = gps_data[color]
+                        sx, sy = _to_stream_xy(data["cx"], data["cy"])
                         cv2.putText(
-                            frame, f"{color.upper()}: {lat:.6f}, {lon:.6f}",
-                            (data["cx"] - 100, data["cy"] - 20),
+                            stream_frame, f"{color.upper()}: {lat:.6f}, {lon:.6f}",
+                            (sx - 100, sy - 20),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2,
                         )
 
-            cv2.putText(frame, f"FPS: {current_fps}", (10, 30),
+            cv2.putText(stream_frame, f"FPS: {current_fps}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
             with state.telemetry_lock:
                 tel = state.current_telemetry.copy()
 
             if tel["alt"]:
-                cv2.putText(frame, f"ALT: {tel['alt']:.1f}m", (10, 60),
+                cv2.putText(stream_frame, f"ALT: {tel['alt']:.1f}m", (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
             wp = state.current_wp
             if wp["index"] is not None:
-                cv2.putText(frame, f"WP: {wp['index']}/{wp['total']}", (10, 90),
+                cv2.putText(stream_frame, f"WP: {wp['index']}/{wp['total']}", (10, 90),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
             fc_ok = state.fc_connected
             cv2.putText(
-                frame,
+                stream_frame,
                 f"FC: {'BAGLI' if fc_ok else 'BAGLI DEGIL'} ({config.FC_BAUDRATE})",
                 (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                 (0, 255, 0) if fc_ok else (0, 0, 255), 2,
@@ -309,7 +343,7 @@ def opencv_processing_thread(queue):
 
             rf_ok = state.wfb_process is not None and state.wfb_process.poll() is None
             cv2.putText(
-                frame,
+                stream_frame,
                 f"RF: {'OK' if rf_ok else 'KOPTU'}",
                 (10, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                 (0, 255, 0) if rf_ok else (0, 0, 255), 2,
@@ -321,23 +355,11 @@ def opencv_processing_thread(queue):
             ]:
                 detected = state.detected_targets[color]
                 cv2.putText(
-                    frame,
+                    stream_frame,
                     label if detected else label.replace("OK", "--"),
                     pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     col_ok if detected else col_no, 2,
                 )
-
-            # Tespit/overlay HEP native (ham) frame üzerinde yapıldı (kalibrasyon +
-            # geo.py matematiği native yönle uyumlu kalsın diye, bkz. config.py
-            # CAMERA_ROTATION_DEG notu). Yalnızca YAYINA giden kare burada çevrilir
-            # — insan operatör yer istasyonunda düz görsün diye. NOT: HUD metinleri
-            # (FPS/ALT/WP/FC/RF/GPS yazıları) frame içine native yönde "yakılmış"
-            # olduğu için çevirme sonrası ters görünür — bilinen, kabul edilen
-            # sınırlama (video içeriği doğru yönde, metin okunabilirliği ikincil).
-            stream_frame = (
-                cv2.rotate(frame, cv2.ROTATE_180)
-                if config.CAMERA_ROTATION_DEG == 180 else frame
-            )
 
             try:
                 _encode_queue.put_nowait(stream_frame.tobytes())
