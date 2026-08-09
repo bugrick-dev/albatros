@@ -285,7 +285,7 @@ def _make_return_to_search_entry_item(existing):
     )
 
 
-def _build_drop_items(release_points):
+def _build_drop_items(release_points, approach_alt_m, approach_frame=3):
     """
     Hedeflere YÖNLENDİRME waypoint'lerini oluşturur (NAV_WAYPOINT + hız
     ayarları). Asıl drop tetikleme burada YOK — drop_trigger_task her
@@ -293,11 +293,24 @@ def _build_drop_items(release_points):
     tetikliyor (bkz. build_and_start_drop_mission), bu sayede tespit anındaki
     eski/varsayılan hıza değil, bırakma anındaki gerçek hıza göre atılıyor.
     Seq geçici 0 — insert sonrası yeniden numaralandırılır.
+
+    approach_alt_m/approach_frame: waypoint'lerin İRTİFASI ve FRAME'i — GCS
+    planındaki SEARCH_START_WP öğesinden (build_and_start_drop_mission'dan
+    geliyor, entry.z/entry.frame — _make_return_to_search_entry_item'ın
+    kullandığıyla AYNI kaynak), rp["alt"] (tespit anındaki ANLIK telemetri
+    irtifası, her zaman relative) DEĞİL. rp["alt"] tek bir telemetri örneği —
+    bank/tur sırasında, GPS/baro gürültüsünde ya da zamanla gerçek irtifadan
+    sapmış olabilir; bunu NAV_WAYPOINT hedefi yaparsak uçak o waypoint'e
+    ulaştığında FC ani tırmanış/DALIŞ komutu üretebilir (2026-08-09: sahada
+    gözlenen ani dalış sonrası bulundu/düzeltildi). Frame'i de entry'den
+    almak (sabit 3 yerine), planın hangi frame'de yazıldığından bağımsız
+    tutarlılık sağlıyor.
     """
     items = []
     for i, rp in enumerate(release_points):
         log.info(f"[MISSION] === Yönlendirme öğesi: Hedef {i+1} {rp['color'].upper()} "
-              f"({rp['lat']:.6f},{rp['lon']:.6f}) alt={rp['alt']:.1f}m ===")
+              f"({rp['lat']:.6f},{rp['lon']:.6f}) tespit-anı-irtifası={rp['alt']:.1f}m "
+              f"| WP irtifası (planlı)={approach_alt_m:.1f}m frame={approach_frame} ===")
 
         items.append(_make_mission_item(
             0, config.CMD_DO_CHANGE_SPEED,
@@ -305,7 +318,7 @@ def _build_drop_items(release_points):
         ))
         items.append(_make_mission_item(
             0, config.CMD_NAV_WAYPOINT, param2=15.0,
-            lat=rp["lat"], lon=rp["lon"], alt=rp["alt"], frame=3,
+            lat=rp["lat"], lon=rp["lon"], alt=approach_alt_m, frame=approach_frame,
         ))
         items.append(_make_mission_item(
             0, config.CMD_DO_CHANGE_SPEED,
@@ -337,8 +350,14 @@ async def build_and_start_drop_mission(drone, release_points):
     return_item = _make_return_to_search_entry_item(existing)
     log.info(f"[MISSION] Tarama girişine dönüş öğesi eklendi (SEARCH_START_WP={config.SEARCH_START_WP} konumu)")
 
-    drop_items = _build_drop_items(release_points)
-    log.info(f"[MISSION] {len(drop_items)} drop öğesi oluşturuldu | USE_FC_SERVO={config.USE_FC_SERVO}")
+    # Drop yaklaşma waypoint'leri için irtifa+frame: GCS planındaki
+    # SEARCH_START_WP öğesinden (return_item'ınkiyle AYNI kaynak) — rp["alt"]
+    # (tespit anındaki anlık telemetri) DEĞİL, bkz. _build_drop_items docstring.
+    approach_alt_m   = existing[config.SEARCH_START_WP].z
+    approach_frame   = existing[config.SEARCH_START_WP].frame
+    drop_items = _build_drop_items(release_points, approach_alt_m, approach_frame)
+    log.info(f"[MISSION] {len(drop_items)} drop öğesi oluşturuldu | USE_FC_SERVO={config.USE_FC_SERVO} "
+             f"| yaklaşma irtifası={approach_alt_m:.1f}m frame={approach_frame}")
 
     home_placeholder = _make_mission_item(0, config.CMD_NAV_WAYPOINT, frame=3)
     new_mission = [home_placeholder, return_item] + drop_items + landing_items

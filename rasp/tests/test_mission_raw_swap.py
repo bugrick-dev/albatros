@@ -201,10 +201,15 @@ async def collect_two_targets():
                     last_no_gps_warn = now
                 continue  # seen_colors'a eklenmiyor, GPS gelince tekrar denenecek
 
-            seen_colors.add(color)
-            target_lat, target_lon = geo.pixel_to_gps(
+            gps_result = geo.pixel_to_gps(
                 tel["lat"], tel["lon"], tel["alt"], tel["yaw"], tel["roll"], tel["pitch"], cx, cy,
             )
+            if gps_result is None:
+                print(f"[TEST] {color.upper()} REDDEDİLDİ (roll={tel['roll']:.1f}°) — "
+                      f"seen_colors'a eklenmiyor, düz uçuşta tekrar denenecek")
+                continue
+            target_lat, target_lon = gps_result
+            seen_colors.add(color)
             # Balistik drop noktası burada hesaplanmıyor — mission.drop_trigger_task
             # her tik'te güncel hızla taze hesaplıyor, burada hedefin kendi
             # GPS konumu yeterli.

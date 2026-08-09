@@ -217,10 +217,17 @@ async def collect_two_targets(drone):
             await asyncio.sleep(1)
             continue
 
-        seen_colors.add(color)
-        target_lat, target_lon = geo.pixel_to_gps(
+        gps_result = geo.pixel_to_gps(
             tel["lat"], tel["lon"], tel["alt"], tel["yaw"], tel["roll"], tel["pitch"], item["cx"], item["cy"],
         )
+        if gps_result is None:
+            print(f"[TEST] {color.upper()} REDDEDİLDİ (roll={tel['roll']:.1f}°) — "
+                  f"hedef geri kuyruğa alınıyor")
+            state.target_queue.put(item)
+            await asyncio.sleep(0.5)
+            continue
+        target_lat, target_lon = gps_result
+        seen_colors.add(color)
         targets.append({
             "color": color, "lat": target_lat, "lon": target_lon, "alt": tel["alt"],
         })

@@ -89,25 +89,30 @@ def print_mission(items, title):
 
 # ==================== ORBIT MİSYONU (drop yerine) ====================
 
-def _build_orbit_items(targets):
+def _build_orbit_items(targets, approach_alt_m, approach_frame=3):
     """
     Her hedef için: NAV_WAYPOINT ile hedefe git, ardından NAV_LOITER_TURNS
     ile ORBIT_TURNS tur boyunca ORBIT_RADIUS_M yarıçapında hedef üstünde dön.
     Servo/GPIO YOK — mission._build_drop_items'ın orbit karşılığı.
+
+    approach_alt_m/approach_frame: t["alt"] (tespit anındaki ANLIK telemetri
+    irtifası) DEĞİL, GCS planındaki SEARCH_START_WP öğesinden — aynı sebep
+    mission._build_drop_items'ta (2026-08-09: sahada gözlenen ani dalış).
     """
     items = []
     for i, t in enumerate(targets):
         print(f"[TEST] === Orbit öğeleri: Hedef {i+1} {t['color'].upper()} "
-              f"({t['lat']:.6f},{t['lon']:.6f}) alt={t['alt']:.1f}m ===")
+              f"({t['lat']:.6f},{t['lon']:.6f}) tespit-anı-irtifası={t['alt']:.1f}m "
+              f"| WP irtifası (planlı)={approach_alt_m:.1f}m ===")
 
         items.append(mission._make_mission_item(
             0, config.CMD_NAV_WAYPOINT, param2=15.0,
-            lat=t["lat"], lon=t["lon"], alt=t["alt"], frame=3,
+            lat=t["lat"], lon=t["lon"], alt=approach_alt_m, frame=approach_frame,
         ))
         items.append(mission._make_mission_item(
             0, config.CMD_NAV_LOITER_TURNS,
             param1=config.ORBIT_TURNS, param3=config.ORBIT_RADIUS_M,
-            lat=t["lat"], lon=t["lon"], alt=t["alt"], frame=3,
+            lat=t["lat"], lon=t["lon"], alt=approach_alt_m, frame=approach_frame,
         ))
     return items
 
@@ -131,8 +136,10 @@ async def build_and_start_orbit_mission(drone, targets):
     print(f"[TEST] İniş sekansı: WP {config.SEARCH_LOOP_EXIT_WP}'den itibaren "
           f"{len(landing_items)} öğe alındı")
 
-    orbit_items = _build_orbit_items(targets)
-    print(f"[TEST] {len(orbit_items)} orbit öğesi oluşturuldu")
+    approach_alt_m = existing[config.SEARCH_START_WP].z
+    approach_frame = existing[config.SEARCH_START_WP].frame
+    orbit_items = _build_orbit_items(targets, approach_alt_m, approach_frame)
+    print(f"[TEST] {len(orbit_items)} orbit öğesi oluşturuldu | yaklaşma irtifası={approach_alt_m:.1f}m")
 
     home_placeholder = mission._make_mission_item(0, config.CMD_NAV_WAYPOINT, frame=3)
     new_mission = [home_placeholder] + orbit_items + landing_items
@@ -221,10 +228,17 @@ async def collect_two_targets():
             await asyncio.sleep(1)
             continue
 
-        seen_colors.add(color)
-        target_lat, target_lon = geo.pixel_to_gps(
+        gps_result = geo.pixel_to_gps(
             tel["lat"], tel["lon"], tel["alt"], tel["yaw"], tel["roll"], tel["pitch"], item["cx"], item["cy"],
         )
+        if gps_result is None:
+            print(f"[TEST] {color.upper()} REDDEDİLDİ (roll={tel['roll']:.1f}°) — "
+                  f"hedef geri kuyruğa alınıyor")
+            state.target_queue.put(item)
+            await asyncio.sleep(0.5)
+            continue
+        target_lat, target_lon = gps_result
+        seen_colors.add(color)
         targets.append({
             "color": color, "lat": target_lat, "lon": target_lon, "alt": tel["alt"],
         })
