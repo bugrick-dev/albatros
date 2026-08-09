@@ -77,8 +77,21 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
         offset_angle_x = delta_x_pixel * (fov_x_rad / config.WIDTH)
         offset_angle_y = delta_y_pixel * (fov_y_rad / config.HEIGHT)
 
+    # Kamera kendi bakış (boresight) ekseni etrafında 180° ters monte edilmişse
+    # (kablo yönü zorunluluğu, bkz. config.py CAMERA_ROTATION_DEG) capture
+    # KASITLI olarak native/rotasyonsuz kalıyor (kalibrasyon değişmesin diye,
+    # bkz. pipeline.py, tools/camera_calibrate.py) — bu yüzden ham frame'de
+    # sağ/sol ve yukarı/aşağı fiilen ters okunuyor. Matematiksel olarak bu,
+    # ışını kameranın kendi X (bakış) ekseni etrafında 180° döndürmeye denk
+    # (Rx(180°): Y ve Z işaretini çevirir) — pratikte iki açıyı da negatiflemek
+    # yeterli (2026-08-09).
+    if config.CAMERA_ROTATION_DEG == 180:
+        offset_angle_x = -offset_angle_x
+        offset_angle_y = -offset_angle_y
+
     log.info(f"[GEO][pixel_to_gps] Açısal ofset: ax={math.degrees(offset_angle_x):.3f}° "
-          f"ay={math.degrees(offset_angle_y):.3f}° (kalibreli={config.CAMERA_CALIBRATED})")
+          f"ay={math.degrees(offset_angle_y):.3f}° (kalibreli={config.CAMERA_CALIBRATED}, "
+          f"kamera_rotasyon={config.CAMERA_ROTATION_DEG}°)")
 
     # --- Kamera ışını: kamera-lokal → gövde → dünya (tam 3B, roll+pitch+yaw) ---
     # Kamera-lokal eksende ışın (Xc=bakış ekseni, Yc=sağ, Zc=yukarı-yönlü ofset).

@@ -15,11 +15,15 @@ FPS    = 30
 BITRATE = 1000000  # WFB FEC yedekliliğiyle (bkz. WFB_FEC_*) uyumlu düşürüldü
 INTRA   = 15        # paket kaybı sonrası hızlı toparlanma için sık keyframe
 
-# Kamera fiziksel olarak ters monte (kablo yukarı çıkacak şekilde) — rpicam-vid
-# seviyesinde düzeltiliyor (yazılımsal cv2.rotate yerine): tespit algoritması
-# (renk/şekil) ve CAMERA_PITCH rotasyondan etkilenmiyor, ham görüntü zaten
-# doğru yönde gelir. DEĞİŞTİRİLİRSE kamera kalibrasyonu YENİDEN yapılmalı —
-# calibrate script'i o anki yönelimi ölçüyor (2026-08-09).
+# Kamera fiziksel olarak ters monte (kablo yukarı çıkacak şekilde). NOT:
+# capture (rpicam-vid) ve kalibrasyon KASITLI olarak native/rotasyonsuz kalır
+# (kalibrasyon değişmeden geçerli olsun diye) — bu sabit yalnızca:
+#   1) geo.py'de piksel açı ofsetlerinin işaretini telafi etmek (kamera kendi
+#      bakış ekseni etrafında 180° dönükse sağ/sol, yukarı/aşağı ters okunur)
+#   2) vision.py'de yalnızca YAYINA giden (encode edilen) kareyi çevirmek
+#      (yer istasyonundaki insan operatör düz görsün diye — tespit/GPS
+#      matematiğini etkilemez)
+# için kullanılıyor. Şu an 0 veya 180 destekleniyor.
 CAMERA_ROTATION_DEG = 180
 
 # --- Tespit alanı sınırları ---

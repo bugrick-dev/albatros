@@ -327,8 +327,20 @@ def opencv_processing_thread(queue):
                     col_ok if detected else col_no, 2,
                 )
 
+            # Tespit/overlay HEP native (ham) frame üzerinde yapıldı (kalibrasyon +
+            # geo.py matematiği native yönle uyumlu kalsın diye, bkz. config.py
+            # CAMERA_ROTATION_DEG notu). Yalnızca YAYINA giden kare burada çevrilir
+            # — insan operatör yer istasyonunda düz görsün diye. NOT: HUD metinleri
+            # (FPS/ALT/WP/FC/RF/GPS yazıları) frame içine native yönde "yakılmış"
+            # olduğu için çevirme sonrası ters görünür — bilinen, kabul edilen
+            # sınırlama (video içeriği doğru yönde, metin okunabilirliği ikincil).
+            stream_frame = (
+                cv2.rotate(frame, cv2.ROTATE_180)
+                if config.CAMERA_ROTATION_DEG == 180 else frame
+            )
+
             try:
-                _encode_queue.put_nowait(frame.tobytes())
+                _encode_queue.put_nowait(stream_frame.tobytes())
             except _queue.Full:
                 pass  # encoder meşgul, bu frame'i düş
 
@@ -354,7 +366,7 @@ def opencv_processing_thread(queue):
             # Periyodik durum özeti (her 5 saniyede bir)
             if now - debug_timer >= 5.0:
                 try:
-                    cv2.imwrite("/home/albatros/logs/hud_preview.jpg", frame)
+                    cv2.imwrite("/home/albatros/logs/hud_preview.jpg", stream_frame)
                 except Exception:
                     pass
                 mavi_str = (

@@ -173,12 +173,16 @@ def start_pipeline(iface):
     log.info(f"[PIPELINE] wfb_tx başladı → PID={state.wfb_process.pid} | log={WFB_TX_LOG_PATH}")
     time.sleep(2)
 
-    # rpicam-vid
+    # rpicam-vid — NOT: --rotation KASITLI olarak kullanılmıyor. Kamera fiziksel
+    # olarak ters monte edilse bile capture native (ham) yönde kalır; tespit/GPS
+    # matematiği native frame üzerinde çalışır (geo.py CAMERA_ROTATION_DEG ile
+    # telafi eder), yalnızca vision.py yayına giden kareyi çeviriyor (bkz.
+    # vision.py _encode_queue). Böylece kalibrasyon da native yönde kalıp
+    # değişmeden geçerliliğini korur (2026-08-09).
     rpicam_cmd = (
         f"rpicam-vid -t 0 --inline --codec h264 "
         f"--width {config.WIDTH} --height {config.HEIGHT} --framerate {config.FPS} "
         f"--bitrate {config.BITRATE} --intra {config.INTRA} "
-        f"--rotation {config.CAMERA_ROTATION_DEG} "
         f"--listen -o tcp://127.0.0.1:{config.RPICAM_TCP_PORT}"
     )
     log.info(f"[PIPELINE] rpicam-vid komutu: {rpicam_cmd}")
