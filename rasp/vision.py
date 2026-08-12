@@ -94,22 +94,70 @@ def _detect_square_in_mask(mask):
     return None
 
 
-def _update_detection(mask, color_key, queue, queued_colors):
+def _finalize_track(color_key, tracking, queue, queued_colors, reason):
+    """En iyi (yer mesafesi en küçük) örneği kuyruğa GERÇEK GPS koordinatıyla gönderir."""
+    track = tracking[color_key]
+    queue.put({"color": color_key, "lat": track["lat"], "lon": track["lon"], "alt": track["alt"]})
+    queued_colors.add(color_key)
+    log.info(f"[VISION] *** {color_key.upper()} KİLİTLENDİ ({reason}) *** "
+          f"({track['lat']:.6f},{track['lon']:.6f}) en-iyi-mesafe={track['dist']:.1f}m "
+          f"— mission kuyruğuna eklendi")
+
+
+def _update_detection(mask, color_key, queue, queued_colors, tel, tracking):
     """
-    Maskeden kare tespit eder.
-    state.detected_targets güncellenir; detection_active ise kuyruk da beslenir.
+    Maskeden kare tespit eder. state.detected_targets HUD/overlay için her
+    zaman güncellenir.
+
+    GPS kilidi: hedefin İLK görüldüğü karede DEĞİL (o genelde kenarda/uzak
+    ve en hatalı örnektir — bkz. config.py MAX_DETECTION_DISTANCE_M notu,
+    2026-08-12), uçak yaklaşırken görülen EN İYİ (pixel_to_gps'in ürettiği
+    yer mesafesi en küçük) karede yapılır. Kilit üç durumdan biriyle tetiklenir
+    (bkz. config.py DETECTION_CONFIRM_STREAK/DETECTION_LOST_STREAK/
+    DETECTION_TRACK_MAX_SEC): art arda kötüleşme (en yakın noktayı geçtik),
+    art arda kayıp (kadraj dışına çıktı) ya da süre aşımı (güvenlik ağı).
     """
     result = _detect_square_in_mask(mask)
+    track = tracking[color_key]
+    locked = color_key in queued_colors
+
     if result:
         cx, cy, cnt = result
         state.detected_targets[color_key] = {"cx": cx, "cy": cy, "contour": cnt}
-        if state.detection_active.is_set() and color_key not in queued_colors:
-            queue.put({"color": color_key, "cx": cx, "cy": cy})
-            queued_colors.add(color_key)
-            log.info(f"[VISION] *** {color_key.upper()} KARE TESPİT EDİLDİ *** "
-                  f"piksel=({cx},{cy}) — mission kuyruğuna eklendi")
+
+        if state.detection_active.is_set() and not locked and None not in tel.values():
+            geo_result = geo.pixel_to_gps(
+                tel["lat"], tel["lon"], tel["alt"], tel["yaw"],
+                tel["roll"], tel["pitch"], cx, cy,
+            )
+            if geo_result is not None:
+                lat, lon = geo_result
+                dist = geo.haversine(tel["lat"], tel["lon"], lat, lon)
+                if track is None or dist < track["dist"]:
+                    tracking[color_key] = track = {
+                        "lat": lat, "lon": lon, "alt": tel["alt"], "dist": dist,
+                        "worse_streak": 0, "miss_streak": 0,
+                        "first_seen": track["first_seen"] if track else time.time(),
+                    }
+                    log.info(f"[VISION] {color_key.upper()} yeni en-iyi örnek: "
+                          f"mesafe={dist:.1f}m piksel=({cx},{cy})")
+                else:
+                    track["worse_streak"] += 1
+                    track["miss_streak"] = 0
     else:
         state.detected_targets[color_key] = None
+        if track is not None and not locked:
+            track["miss_streak"] += 1
+            if track["miss_streak"] >= config.DETECTION_LOST_STREAK:
+                _finalize_track(color_key, tracking, queue, queued_colors, "kadraj dışı")
+                return
+
+    track = tracking[color_key]
+    if track is not None and not locked:
+        if track["worse_streak"] >= config.DETECTION_CONFIRM_STREAK:
+            _finalize_track(color_key, tracking, queue, queued_colors, "en yakın nokta geçildi")
+        elif time.time() - track["first_seen"] > config.DETECTION_TRACK_MAX_SEC:
+            _finalize_track(color_key, tracking, queue, queued_colors, "süre aşımı")
 
 
 # ==================== ANA THREAD ====================
@@ -227,8 +275,9 @@ def opencv_processing_thread(queue):
     threading.Thread(target=ffmpeg_to_gstreamer, daemon=True).start()
 
     frame_size    = config.WIDTH * config.HEIGHT * 3
-    gps_data      = {}      # {color: (lat, lon)} — her renk için yalnızca bir kez hesaplanır
-    queued_colors = set()   # her renk yalnızca bir kez kuyruğa girer
+    gps_data      = {}      # {color: (lat, lon)} — HUD için tracking'teki en-iyi örneği yansıtır
+    queued_colors = set()   # her renk yalnızca bir kez kuyruğa girer (kilitlendi)
+    tracking      = {"mavi": None, "kirmizi": None}  # {color: {"lat","lon","alt","dist","worse_streak","miss_streak","first_seen"} | None}
     frame_count   = 0
     fps_time      = time.time()
     current_fps   = 0
@@ -281,18 +330,31 @@ def opencv_processing_thread(queue):
                 frame_count = 0
                 fps_time    = now
 
+            # Tespit-anı telemetrisi: _update_detection'ın anlık pixel_to_gps
+            # hesabı için burada okunuyor (mesafe-izleme mantığı her karede
+            # o karenin GERÇEK telemetrisiyle çalışmalı — tüketici tarafında
+            # sonradan "güncel" telemetri okumak, hareket halindeyken hatalı
+            # eşleşmeye yol açardı).
+            with state.telemetry_lock:
+                tel = state.current_telemetry.copy()
+
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
             # Mavi kare tespiti
             mask_blue = _apply_morph(cv2.inRange(hsv, config.BLUE_HSV_LOWER, config.BLUE_HSV_UPPER))
-            _update_detection(mask_blue, "mavi", queue, queued_colors)
+            _update_detection(mask_blue, "mavi", queue, queued_colors, tel, tracking)
 
             # Kırmızı kare tespiti (iki HSV aralığı OR'lanır)
             mask_red = _apply_morph(cv2.bitwise_or(
                 cv2.inRange(hsv, config.RED1_HSV_LOWER, config.RED1_HSV_UPPER),
                 cv2.inRange(hsv, config.RED2_HSV_LOWER, config.RED2_HSV_UPPER),
             ))
-            _update_detection(mask_red, "kirmizi", queue, queued_colors)
+            _update_detection(mask_red, "kirmizi", queue, queued_colors, tel, tracking)
+
+            for _color in ("mavi", "kirmizi"):
+                _t = tracking[_color]
+                if _t is not None:
+                    gps_data[_color] = (_t["lat"], _t["lon"])
 
             # Tespit (yukarıda) hep native frame'de yapıldı — kalibrasyon ve
             # geo.py matematiği için gerekli. Overlay'in TAMAMI ise (kontur +
@@ -320,9 +382,6 @@ def opencv_processing_thread(queue):
 
             cv2.putText(stream_frame, f"FPS: {current_fps}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-            with state.telemetry_lock:
-                tel = state.current_telemetry.copy()
 
             if tel["alt"]:
                 cv2.putText(stream_frame, f"ALT: {tel['alt']:.1f}m", (10, 60),
@@ -365,25 +424,6 @@ def opencv_processing_thread(queue):
                 _encode_queue.put_nowait(stream_frame.tobytes())
             except _queue.Full:
                 pass  # encoder meşgul, bu frame'i düş
-
-            # GPS koordinatı hesapla — her renk için yalnızca bir kez.
-            # pixel_to_gps() yüksek roll'da (bank) None dönebilir (bkz. geo.py,
-            # config.MAX_ROLL_FOR_DETECTION_DEG) — o durumda color HENÜZ
-            # gps_data'ya eklenmez, bir sonraki (daha düz) frame'de tekrar denenir.
-            if None not in tel.values():
-                for color, data in state.detected_targets.items():
-                    if data and color not in gps_data:
-                        result = geo.pixel_to_gps(
-                            tel["lat"], tel["lon"], tel["alt"], tel["yaw"],
-                            tel["roll"], tel["pitch"],
-                            data["cx"], data["cy"],
-                        )
-                        if result is None:
-                            continue
-                        lat, lon = result
-                        gps_data[color] = (lat, lon)
-                        log.info(f"[VISION] {color.upper()} GPS koordinatı hesaplandı: "
-                              f"({lat:.6f}, {lon:.6f})")
 
             # Periyodik durum özeti (her 5 saniyede bir)
             if now - debug_timer >= 5.0:

@@ -424,7 +424,7 @@ async def mission_task(drone, queue):
         try:
             target = queue.get(timeout=0.5)
             log.info(f"[MISSION] Kuyruktan alındı: {target['color'].upper()} "
-                  f"piksel=({target['cx']},{target['cy']})")
+                  f"({target['lat']:.6f},{target['lon']:.6f})")
         except Empty:
             if len(release_points) == 1 and first_detection_time:
                 elapsed   = time.time() - first_detection_time
@@ -438,52 +438,35 @@ async def mission_task(drone, queue):
             await asyncio.sleep(0.1)
             continue
 
-        with state.telemetry_lock:
-            tel = state.current_telemetry.copy()
-
-        if None in tel.values():
-            log.info(f"[MISSION] Telemetri eksik {tel} — hedef geri kuyruğa alınıyor")
-            queue.put(target)
-            await asyncio.sleep(1)
-            continue
-
         color = target["color"]
         if any(rp["color"] == color for rp in release_points):
             log.info(f"[MISSION] {color.upper()} zaten işlendi — tekrar atlandı")
             continue
 
-        log.info(f"[MISSION] {color.upper()} işleniyor | telemetri: {tel}")
-        result = geo.pixel_to_gps(
-            tel["lat"], tel["lon"], tel["alt"], tel["yaw"],
-            tel["roll"], tel["pitch"],
-            target["cx"], target["cy"],
-        )
-        if result is None:
-            # Yüksek roll (bank) ya da dejenere projeksiyon — bu tespiti şimdi
-            # işleme, kuyruğa geri koy, uçak düzelince tekrar denenecek.
-            log.info(f"[MISSION] {color.upper()} REDDEDİLDİ (roll={tel['roll']:.1f}°) — "
-                     f"hedef geri kuyruğa alınıyor")
-            queue.put(target)
-            await asyncio.sleep(0.5)
-            continue
-        target_lat, target_lon = result
-
+        # GPS koordinatı ARTIK BURADA hesaplanmıyor — vision.py'nin izleme
+        # döngüsü (bkz. _update_detection/_finalize_track) hedefi kadraja
+        # ilk girdiği andan itibaren TAKİP EDİP en yakın (en düşük hatalı)
+        # örneği o karenin GERÇEK telemetrisiyle zaten hesaplayıp kilitledi;
+        # kuyruğa hazır (lat, lon, alt) geliyor (2026-08-12, bkz. config.py
+        # DETECTION_CONFIRM_STREAK notu). Roll/pitch/mesafe reddi de aynı
+        # döngüde (geo.pixel_to_gps üzerinden) zaten uygulanmış durumda.
+        #
         # Balistik drop noktası burada HESAPLANMIYOR — tespit anındaki hız
         # varsayımı bırakma anında geçersiz olabilir. Hedefin kendi GPS
         # konumu saklanır, drop_trigger_task her tik'te güncel hızla
         # calculate_drop_point()'i taze hesaplar.
         release_points.append({
             "color":   color,
-            "lat":     target_lat,
-            "lon":     target_lon,
-            "alt":     tel["alt"],
+            "lat":     target["lat"],
+            "lon":     target["lon"],
+            "alt":     target["alt"],
             "dropped": False,
         })
         if first_detection_time is None:
             first_detection_time = time.time()
 
         log.info(f"[MISSION] ✓ {color.upper()} hedef konumu kaydedildi: "
-              f"({target_lat:.6f},{target_lon:.6f}) — "
+              f"({target['lat']:.6f},{target['lon']:.6f}) — "
               f"{len(release_points)}/2 hedef toplandı")
 
     log.info(f"[MISSION] Tarama tamamlandı ({len(release_points)} hedef). "

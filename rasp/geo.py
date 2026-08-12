@@ -46,9 +46,15 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     (2026-08-08 simülasyonla bulundu/doğrulandı — 15° roll'da dead-center
     tespit bile ~16m kayıyordu, eskiden roll hiç kullanılmıyordu).
 
-    MAX_ROLL_FOR_DETECTION_DEG aşılırsa ya da ışın ufka çok yakın/üstünde
+    MAX_ROLL_FOR_DETECTION_DEG/MAX_PITCH_FOR_DETECTION_DEG aşılırsa, hesaplanan
+    mesafe MAX_DETECTION_DISTANCE_M'yi aşarsa ya da ışın ufka çok yakın/üstünde
     çıkarsa (dejenere projeksiyon) None döner — çağıran taraf bu tespiti
-    atlamalı, bir sonraki (daha düz) anı beklemeli.
+    atlamalı, bir sonraki (daha düz/merkezi) anı beklemeli. Mesafe sınırı
+    özellikle önemli: roll/pitch SIFIR olsa bile frame'in üst kenarına yakın
+    pikseller ışını ufka doğru sığ bir açıyla göndermiş oluyor — bu bölgede
+    küçük bir attitude hatası mesafeyi/yönü onlarca-yüzlerce metre oynatabiliyor
+    (2026-08-12 masa/Gazebo testinde ~150-160m'lik "saçma" sapmalar bulundu,
+    bkz. config.py MAX_DETECTION_DISTANCE_M notu).
     """
     log.info(f"[GEO][pixel_to_gps] Giriş: drone=({drone_lat:.6f},{drone_lon:.6f}) "
           f"alt={alt:.1f}m yaw={yaw_deg:.1f}° roll={roll_deg:.1f}° pitch={pitch_deg:.1f}° "
@@ -57,6 +63,11 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     if abs(roll_deg) > config.MAX_ROLL_FOR_DETECTION_DEG:
         log.info(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: |roll|={abs(roll_deg):.1f}° > "
                  f"MAX_ROLL_FOR_DETECTION_DEG={config.MAX_ROLL_FOR_DETECTION_DEG}° — tespit atlanıyor")
+        return None
+
+    if abs(pitch_deg) > config.MAX_PITCH_FOR_DETECTION_DEG:
+        log.info(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: |pitch|={abs(pitch_deg):.1f}° > "
+                 f"MAX_PITCH_FOR_DETECTION_DEG={config.MAX_PITCH_FOR_DETECTION_DEG}° — tespit atlanıyor")
         return None
 
     if config.CAMERA_CALIBRATED:
@@ -115,6 +126,13 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     delta_north = t * ray_world[0]
     delta_east  = t * ray_world[1]
     log.info(f"[GEO][pixel_to_gps] Dünya koordinatları: kuzey={delta_north:.2f}m doğu={delta_east:.2f}m")
+
+    horizontal_dist = math.hypot(delta_north, delta_east)
+    if horizontal_dist > config.MAX_DETECTION_DISTANCE_M:
+        log.info(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: mesafe={horizontal_dist:.1f}m > "
+                 f"MAX_DETECTION_DISTANCE_M={config.MAX_DETECTION_DISTANCE_M}m — sığ açı/dejenere "
+                 f"projeksiyon şüphesi, tespit atlanıyor")
+        return None
 
     target_lat = drone_lat + (delta_north / 111320)
     target_lon = drone_lon + (delta_east  / (111320 * math.cos(math.radians(drone_lat))))

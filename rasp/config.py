@@ -34,9 +34,23 @@ MAX_AREA = int(0.3   * WIDTH * HEIGHT)
 # Gerçek yarışma malzemesinin (branda vb.) tam tonu henüz bilinmediği için
 # geniş aralıkta bırakıldı (2026-07-26) — malzeme netleşince gerçek örnekle
 # (HSV tuner widget'ıyla) daraltılacak.
-BLUE_H_MIN, BLUE_H_MAX = 100, 130
-BLUE_S_MIN, BLUE_S_MAX =  80, 255
-BLUE_V_MIN, BLUE_V_MAX =  50, 255
+#
+# 2026-08-12: sahada MAVİ branda hiç tespit edilmedi — aralık körlemesine
+# (elde referans görüntü/HSV örneği olmadan) genişletildi:
+#   H  100-130 -> 95-135  (güneş ışığında/parlamada gerçek malzeme camgöbeğine
+#                 (cyan) ya da mora doğru kaymış olabilir)
+#   S   80-255 -> 60-255  (soluk/tozlu branda ya da güneşte "yıkanmış" görünüm
+#                 düşük doygunluk üretebilir)
+#   V   50-255 -> 35-255  (gölgede kalan kısımları da yakalasın)
+# Bu GEÇİCİ bir düzeltme — hâlâ gözle tahmin. Bir sonraki saha testinde
+# gerçek bir kare/fotoğraf alınırsa (ya da bir HSV tuner aracıyla canlı
+# ayarlanırsa) bu aralık kesinleştirilmeli; şu an fazla geniş olursa yanlış
+# pozitif riski artar (bkz. MAX_DETECTION_DISTANCE_M/roll/pitch reddi zaten
+# uzak/şüpheli tespitleri eliyor ama sahte YAKIN tespitlere karşı koruma
+# değil).
+BLUE_H_MIN, BLUE_H_MAX =  95, 135
+BLUE_S_MIN, BLUE_S_MAX =  60, 255
+BLUE_V_MIN, BLUE_V_MAX =  35, 255
 
 RED1_H_MIN, RED1_H_MAX =   0,  10
 RED2_H_MIN, RED2_H_MAX = 170, 180
@@ -124,6 +138,44 @@ CAMERA_PITCH = 45.0
 # aşırı büyük/dejenere mesafeler üretebiliyor (simülasyonla doğrulandı,
 # 2026-08-08: 30°+ roll'da köşe pikselleri 100-1000+ m hataya çıkabiliyor).
 MAX_ROLL_FOR_DETECTION_DEG = 30.0
+
+# Roll ile AYNI sebep, pitch için: burun kalkarsa (nose-up) ışının ufka göre
+# çökme açısı daha da azalır, aynı sığ-açı büyütmesi oluşur — roll'da
+# eskiden gözlendiği gibi (bkz. yukarısı) pitch de sınırsız bırakılırsa aynı
+# hataya düşer, o yüzden roll'la SİMETRİK sınırlandı.
+MAX_PITCH_FOR_DETECTION_DEG = 30.0
+
+# Hesaplanan yatay mesafe (drone -> hedef) bu değeri aşarsa tespit
+# REDDEDİLİR — 2026-08-12 masa/Gazebo testlerinde bulundu: CAMERA_PITCH=45°
+# + CAMERA_FOV_V=48.8° ile frame'in ÜST kenarına yakın bir tespit, roll/pitch
+# SIFIR olsa BİLE ~60m irtifada ~160m'ye projekte oluyor (60/tan(45-24.4°)),
+# ve bu bölgede birkaç derecelik attitude gürültüsü mesafeyi/yönü onlarca-
+# yüzlerce metre oynatabiliyor (dt/dθ, θ küçüldükçe patlıyor). ORBIT_RADIUS_M
+# ve arama koridoru göz önüne alınarak seçildi — Gazebo'da farklı irtifa/FOV
+# kombinasyonlarıyla yeniden doğrulanmalı, gerekirse ayarlanmalı.
+MAX_DETECTION_DISTANCE_M = 100.0
+
+# --- Hedef izleme: en-yakın-nokta kilidi (bkz. vision._update_detection) ---
+# 45° açılı montaj KORUNUYOR (erken tespit/orbit planlama için gerekli,
+# 2026-08-12 tartışması) — ama artık GPS kilidi hedefin İLK görüldüğü
+# (genelde kenarda/uzak, en hatalı) karede değil, uçak yaklaşırken görülen
+# EN İYİ (yer mesafesi en küçük) karede yapılıyor. Bu üç sabit o izleme
+# döngüsünü kontrol eder:
+#
+#   DETECTION_CONFIRM_STREAK: en iyi örnekten sonra art arda bu kadar kare
+#     "daha kötü" (mesafe artıyor) gelirse en yakın noktayı geçtik demektir
+#     — o ana kadarki en iyi örnek kilitlenir.
+#   DETECTION_LOST_STREAK: hedef art arda bu kadar karede HİÇ tespit
+#     edilemezse (kadraj dışına çıktı/kalıcı kayıp) kilitlenir — tek bir
+#     karenin parlama/motion-blur yüzünden kaçırılması yüzünden yanlışlıkla
+#     "kayıp" sayılmasın diye (tam bir görsel tracker yerine ucuz tolerans).
+#   DETECTION_TRACK_MAX_SEC: yukarıdakilerin hiçbiri tetiklenmezse (ör. hedef
+#     tüm geçiş boyunca kadrajda kalıp hep "iyileşiyor" görünürse) süre
+#     dolunca yine de elimizdeki en iyi örnekle kilitlenir — sonsuz beklemeyi
+#     önler.
+DETECTION_CONFIRM_STREAK = 8
+DETECTION_LOST_STREAK    = 5
+DETECTION_TRACK_MAX_SEC  = 4.0
 
 # --- Kamera kalibrasyonu (cihaza özel, git'e girmez — bkz. tools/camera_calibrate.py) ---
 CAMERA_CALIB_PATH = Path(__file__).parent / "camera_calib.json"
