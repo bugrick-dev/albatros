@@ -3,3 +3,10 @@
 rasp/camera_calib.json
 rasp/tools/chessboard_pattern.png
 rasp/tools/last_capture.jpg
+
+# Python sanal ortam / derlenmiş bytecode — geliştirme makinesine özel,
+# yanlışlıkla eklenmemesi için (2026-08-12: VS Code "stage all" ile 2700+
+# .venv dosyası yanlışlıkla stage edilmişti)
+.venv/
+__pycache__/
+*.pyc
