@@ -76,10 +76,15 @@ async def telemetry_task(drone):
     log.info("[TELEMETRY] Konum akışı başlatıldı")
     count = 0
     async for position in drone.telemetry.position():
+        now = time.monotonic()
         with state.telemetry_lock:
             state.current_telemetry["lat"] = position.latitude_deg
             state.current_telemetry["lon"] = position.longitude_deg
             state.current_telemetry["alt"] = position.relative_altitude_m
+            state.position_history.append((
+                now, position.latitude_deg, position.longitude_deg,
+                position.relative_altitude_m,
+            ))
         count += 1
         if count % 50 == 0:
             log.info(f"[TELEMETRY] #{count}: lat={position.latitude_deg:.6f} "
@@ -93,10 +98,14 @@ async def attitude_task(drone):
     log.info("[ATTITUDE] Yaw/roll/pitch akışı başlatıldı")
     count = 0
     async for attitude in drone.telemetry.attitude_euler():
+        now = time.monotonic()
         with state.telemetry_lock:
             state.current_telemetry["yaw"]   = attitude.yaw_deg
             state.current_telemetry["roll"]  = attitude.roll_deg
             state.current_telemetry["pitch"] = attitude.pitch_deg
+            state.attitude_history.append((
+                now, attitude.yaw_deg, attitude.roll_deg, attitude.pitch_deg,
+            ))
         count += 1
         if count % 50 == 0:
             log.info(f"[ATTITUDE] #{count}: yaw={attitude.yaw_deg:.1f}° "

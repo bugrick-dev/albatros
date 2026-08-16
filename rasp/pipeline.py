@@ -179,16 +179,24 @@ def start_pipeline(iface):
     # telafi eder), yalnızca vision.py yayına giden kareyi çeviriyor (bkz.
     # vision.py _encode_queue). Böylece kalibrasyon da native yönde kalıp
     # değişmeden geçerliliğini korur (2026-08-09).
+    #
+    # RAW YUV420 çıktı (stdout, -o -) — ESKİDEN --codec h264 + --listen TCP ile
+    # H264 üretilip vision.py'de ffmpeg ile tekrar raw'a DECODE ediliyordu, sonra
+    # OpenCV işleyip TEKRAR H264'e encode ediyordu (çift encode/decode, gereksiz
+    # CPU + gecikme). Artık rpicam-vid doğrudan raw veriyor, vision.py TEK bir
+    # ffmpeg (encode, transmisyon için) kullanıyor (2026-08-16, çift codec turu
+    # kaldırıldı — bkz. vision.py cv2.cvtColor I420->BGR notu).
     rpicam_cmd = (
-        f"rpicam-vid -t 0 --inline --codec h264 "
+        f"rpicam-vid -t 0 --codec yuv420 "
         f"--width {config.WIDTH} --height {config.HEIGHT} --framerate {config.FPS} "
-        f"--bitrate {config.BITRATE} --intra {config.INTRA} "
-        f"--listen -o tcp://127.0.0.1:{config.RPICAM_TCP_PORT}"
+        f"-o -"
     )
     log.info(f"[PIPELINE] rpicam-vid komutu: {rpicam_cmd}")
     rpicam_stderr = open("/home/albatros/logs/rpicam.log", "wb")
-    state.rpicam_process = subprocess.Popen(shlex.split(rpicam_cmd), stderr=rpicam_stderr)
-    log.info(f"[PIPELINE] rpicam-vid başladı → PID={state.rpicam_process.pid} | TCP:{config.RPICAM_TCP_PORT}")
+    state.rpicam_process = subprocess.Popen(
+        shlex.split(rpicam_cmd), stdout=subprocess.PIPE, stderr=rpicam_stderr
+    )
+    log.info(f"[PIPELINE] rpicam-vid başladı → PID={state.rpicam_process.pid} (raw stdout)")
     time.sleep(5)
 
     watchdog_thread = threading.Thread(target=_wfb_watchdog, args=(iface,), daemon=True)
@@ -204,7 +212,6 @@ def stop_pipeline():
     procs = [
         (state.gst_process,           "GStreamer"),
         (state.ffmpeg_encode_process, "FFmpeg-enc"),
-        (state.ffmpeg_decode_process, "FFmpeg-dec"),
         (state.rpicam_process,        "rpicam-vid"),
         (state.wfb_process,           "wfb_tx"),
     ]

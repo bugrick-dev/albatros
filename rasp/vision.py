@@ -163,55 +163,18 @@ def _update_detection(mask, color_key, queue, queued_colors, tel, tracking):
 # ==================== ANA THREAD ====================
 
 
-def _wait_for_tcp_listen(port, timeout=15, interval=0.2):
-    """rpicam-vid TCP portu dinlemeye baslayana kadar bekler (baglanti KURMADAN kontrol eder,
-    aksi halde --listen tek seferlik accept slotunu tuketebilir)."""
-    start = time.time()
-    while time.time() - start < timeout:
-        if state.shutdown_requested.is_set():
-            log.info("[VISION] Kapanış sinyali alındı — port bekleme iptal edildi")
-            return False
-        try:
-            out = subprocess.run(["ss", "-tln"], capture_output=True, text=True, timeout=1)
-            if f":{port} " in out.stdout:
-                log.info(f"[VISION] ✓ Port {port} dinlemede — devam ediliyor")
-                return True
-        except Exception:
-            pass
-        time.sleep(interval)
-    log.info(f"[VISION] ⚠ Port {port} {timeout}s icinde dinlemeye gecmedi, yine de devam ediliyor")
-    return False
-
 def opencv_processing_thread(queue):
-    log.info("[VISION] Thread başlatıldı — rpicam-vid TCP portu bekleniyor...")
-    _wait_for_tcp_listen(config.RPICAM_TCP_PORT, timeout=25)
+    log.info("[VISION] Thread başlatıldı — rpicam-vid raw stdout bekleniyor...")
     if state.shutdown_requested.is_set():
         log.info("[VISION] Kapanış sinyali alındı — pipeline başlatılmadan çıkılıyor")
         return
 
-    # --- FFmpeg decode: TCP H264 → raw BGR ---
-    # -r (giriş framerate ipucu) -i'den ONCE sart: aksi halde probesize/analyzeduration
-    # cok kucuk oldugu icin ffmpeg gercek framerate'i tahmin edemiyor ve neredeyse
-    # tum kareleri "drop" ediyor (2026-07-26 sahada bulunup dogrulandi).
-    ffmpeg_decode_cmd = [
-        "ffmpeg",
-        "-fflags", "nobuffer",
-        "-flags", "low_delay",
-        "-probesize", "32",
-        "-analyzeduration", "0",
-        "-r", str(config.FPS),
-        "-i", f"tcp://127.0.0.1:{config.RPICAM_TCP_PORT}",
-        "-f", "rawvideo", "-pix_fmt", "bgr24",
-        "-s", f"{config.WIDTH}x{config.HEIGHT}",
-        "-r", str(config.FPS),
-        "-",
-    ]
-    log.info(f"[VISION] FFmpeg decode başlatılıyor: {' '.join(ffmpeg_decode_cmd)}")
-    ffmpeg_decode_stderr = open("/home/albatros/logs/ffmpeg_decode.log", "wb")
-    state.ffmpeg_decode_process = subprocess.Popen(
-        ffmpeg_decode_cmd, stdout=subprocess.PIPE, stderr=ffmpeg_decode_stderr
-    )
-    log.info(f"[VISION] FFmpeg decode başladı → PID={state.ffmpeg_decode_process.pid}")
+    # NOT (2026-08-16): Eskiden rpicam-vid H264 üretip TCP üzerinden ffmpeg'e
+    # gönderiyordu, ffmpeg de bunu raw BGR'a DECODE ediyordu — sonra OpenCV
+    # işleyip aşağıdaki ffmpeg_encode ile TEKRAR H264'e encode ediliyordu.
+    # Çift encode/decode gereksiz CPU yükü + gecikme demekti (ffmpeg decode
+    # süreci komple kaldırıldı, bkz. pipeline.py rpicam_cmd — artık --codec
+    # yuv420 -o - ile raw I420 doğrudan bu sürecin stdout'undan okunuyor).
 
     # --- FFmpeg encode: raw BGR → H264 (yazilimsal) ---
     # Pi 5'te bcm2835-codec gibi ayri bir H264 donanim encode blogu yok (video19
@@ -274,7 +237,9 @@ def opencv_processing_thread(queue):
 
     threading.Thread(target=ffmpeg_to_gstreamer, daemon=True).start()
 
-    frame_size    = config.WIDTH * config.HEIGHT * 3
+    # Raw YUV420 (I420 planar): width*height*1.5 byte/kare — eski BGR decode
+    # çıktısının (width*height*3) yarısı, ayrıca kaynakta bir codec turu eksik.
+    frame_size    = config.WIDTH * config.HEIGHT * 3 // 2
     gps_data      = {}      # {color: (lat, lon)} — HUD için tracking'teki en-iyi örneği yansıtır
     queued_colors = set()   # her renk yalnızca bir kez kuyruğa girer (kilitlendi)
     tracking      = {"mavi": None, "kirmizi": None}  # {color: {"lat","lon","alt","dist","worse_streak","miss_streak","first_seen"} | None}
@@ -306,18 +271,31 @@ def opencv_processing_thread(queue):
 
     log.info(f"[VISION] Frame okuma döngüsü başladı — frame_size={frame_size} bytes")
 
+    last_staleness_warn = 0.0
+
     while True:
         try:
-            raw_frame = state.ffmpeg_decode_process.stdout.read(frame_size)
+            raw_frame = state.rpicam_process.stdout.read(frame_size)
+            # Frame'in bu sürece ULAŞTIĞI an — gerçek sensör yakalama anından hâlâ
+            # biraz geride (rpicam-vid'in kendi ISP/pipe gecikmesi kadar), ama artık
+            # H264 encode+decode turu olmadığı için eskisinden çok daha yakın.
+            # Aşağıdaki telemetri eşlemesi bu ana göre yapılıyor (bkz. state.py
+            # nearest_telemetry_at, 2026-08-16 — Öncelik 3 zaman senkronizasyonu).
+            frame_time = time.monotonic()
 
             if len(raw_frame) != frame_size:
                 log.info(f"[VISION] Eksik frame: {len(raw_frame)}/{frame_size} byte — atlanıyor")
                 time.sleep(0.01)
                 continue
 
-            frame = np.frombuffer(raw_frame, dtype=np.uint8).reshape(
-                (config.HEIGHT, config.WIDTH, 3)
-            ).copy()
+            # I420 (YUV420 planar) → BGR. rpicam-vid --codec yuv420 çıktısı bu
+            # düzende: Y düzlemi (H×W) + U/V düzlemleri (H/2×W/2 her biri),
+            # toplam H*1.5 satır × W sütun olarak yorumlanabilir (OpenCV'nin
+            # standart I420 kabulü budur).
+            yuv = np.frombuffer(raw_frame, dtype=np.uint8).reshape(
+                (config.HEIGHT * 3 // 2, config.WIDTH)
+            )
+            frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
 
             if undistort_map1 is not None:
                 frame = cv2.remap(frame, undistort_map1, undistort_map2, cv2.INTER_LINEAR)
@@ -330,13 +308,25 @@ def opencv_processing_thread(queue):
                 frame_count = 0
                 fps_time    = now
 
-            # Tespit-anı telemetrisi: _update_detection'ın anlık pixel_to_gps
-            # hesabı için burada okunuyor (mesafe-izleme mantığı her karede
-            # o karenin GERÇEK telemetrisiyle çalışmalı — tüketici tarafında
-            # sonradan "güncel" telemetri okumak, hareket halindeyken hatalı
-            # eşleşmeye yol açardı).
-            with state.telemetry_lock:
-                tel = state.current_telemetry.copy()
+            # Tespit-anı telemetrisi: _update_detection'ın anlık pixel_to_gps hesabı
+            # için burada okunuyor. ESKİDEN "şu an ne varsa o" (state.current_telemetry)
+            # okunuyordu — bu, frame'in gerçek yakalama anıyla telemetri okuma anı
+            # arasındaki pipeline gecikmesi kadar YANLIŞ (stale) veri demekti,
+            # özellikle hızlı dönüş/manevra sırasında onlarca-yüzlerce metrelik
+            # hataya yol açabiliyordu (checklist "Öncelik 3"). Artık frame_time'a
+            # EN YAKIN konum/duruş örnekleri ayrı ayrı seçiliyor (bkz. state.py
+            # nearest_telemetry_at). Henüz hiç telemetri gelmediyse (açılış anı)
+            # eski None-doldurma davranışına düşülüyor (2026-08-16).
+            tel = state.nearest_telemetry_at(frame_time)
+            if tel is None:
+                tel = {"lat": None, "lon": None, "alt": None,
+                       "yaw": None, "roll": None, "pitch": None}
+            else:
+                staleness = max(tel["pos_age_s"], tel["att_age_s"])
+                if staleness > 0.15 and now - last_staleness_warn > 5.0:
+                    log.info(f"[VISION] ⚠ telemetri eşleşmesi {staleness*1000:.0f}ms eski "
+                             f"(pos={tel['pos_age_s']*1000:.0f}ms att={tel['att_age_s']*1000:.0f}ms)")
+                    last_staleness_warn = now
 
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
