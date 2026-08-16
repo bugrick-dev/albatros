@@ -7,7 +7,7 @@ eder, boylece kronolojik/birlesik goruntu de korunur.
 import logging
 
 LOG_DIR = "/home/albatros/logs"
-MODULES = ["main", "servo", "pipeline", "vision", "mission", "geo"]
+MODULES = ["main", "pipeline", "vision", "mission", "geo"]
 
 
 def setup_logging():

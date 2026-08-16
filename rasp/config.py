@@ -198,11 +198,6 @@ if CAMERA_CALIB_PATH.is_file():
     except Exception:
         pass  # bozuk/eksik dosya — FOV tabanlı yedek hesaba düş
 
-# --- Servo (RPi GPIO) ---
-# Şartname: mavi hedefe kırmızı boyalı yük, kırmızı hedefe mavi boyalı yük
-SERVO_KIRMIZI_YUK_PIN = 18   # kırmızı boyalı yük → mavi hedefe
-SERVO_MAVI_YUK_PIN    = 23   # mavi boyalı yük    → kırmızı hedefe
-
 # --- Uçuş parametreleri ---
 DRONE_SPEED_MS             = 15.0
 DROP_TRIGGER_RADIUS_M      = 40
@@ -221,8 +216,7 @@ SEARCH_LOOP_EXIT_WP = 7      # DO_JUMP'tan SONRAKİ WP index. Hedefler bulundukt
                               # itibaren olan öğeler "iniş sekansı" sayılır ve yeni drop misyonuna
                               # olduğu gibi eklenir (bkz. mission.build_and_start_drop_mission)
 
-# --- FC Servo (USE_FC_SERVO=True ise geçerli) ---
-USE_FC_SERVO        = True  # True → DO_SET_SERVO (FC çıkışı), False → RPi GPIO
+# --- FC Servo (tek yol — GPIO servo kaldırıldı, 2026-08-16) ---
 SERVO_KIRMIZI_FC_NO = 9      # FC servo kanalı — kırmızı yük (AUX1)
 SERVO_MAVI_FC_NO    = 10     # FC servo kanalı — mavi yük (AUX2)
 

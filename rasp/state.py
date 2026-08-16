@@ -82,7 +82,3 @@ ffmpeg_encode_process = None
 
 # --- Kapanis sinyali (thread'lerin duzgun sonlanmasi icin) ---
 shutdown_requested = threading.Event()
-
-# --- Servo PWM nesneleri ---
-servo_kirmizi_pwm = None
-servo_mavi_pwm    = None

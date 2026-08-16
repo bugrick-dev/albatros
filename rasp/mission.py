@@ -5,7 +5,7 @@ MAVSDK görev yönetimi:
   - Drop misyonu oluşturma ve yükleme (mission_raw) — yalnızca YÖNLENDİRME
   - Canlı balistik drop tetikleme (drop_trigger_task): her telemetri tik'inde
     güncel hız/irtifa ile calculate_drop_point() yeniden hesaplanır, doğru
-    anda USE_FC_SERVO'ya göre FC'ye DO_SET_SERVO gönderilir ya da GPIO tetiklenir.
+    anda FC'ye DO_SET_SERVO gönderilir (GPIO servo yolu kaldırıldı, 2026-08-16).
 """
 import asyncio
 import json
@@ -18,7 +18,6 @@ from mavsdk.mavlink_direct import MavlinkMessage
 import config
 import state
 import geo
-import servo
 
 log = logging.getLogger("mission")
 
@@ -171,12 +170,10 @@ async def drop_trigger_task(drone, release_points):
     yeniden hesaplar (hedefin kendisi rp['lat']/rp['lon']'da sabit tutulur,
     balistik ofset her seferinde taze hesaplanır) — tespit anındaki eski/
     varsayılan hıza güvenilmez. O anki konum canlı hesaplanan drop noktasına
-    DROP_TRIGGER_RADIUS_M'den yakınsa tetikler:
-      USE_FC_SERVO=True  → FC'ye DO_SET_SERVO komutu gönderilir (servo FC'de).
-      USE_FC_SERVO=False → RPi GPIO servo doğrudan tetiklenir.
+    DROP_TRIGGER_RADIUS_M'den yakınsa tetikler: FC'ye DO_SET_SERVO komutu
+    gönderilir (GPIO servo yolu kaldırıldı, 2026-08-16).
     """
-    log.info(f"[DROP] Canlı balistik trigger başlatıldı — {len(release_points)} hedef izleniyor "
-          f"| USE_FC_SERVO={config.USE_FC_SERVO}")
+    log.info(f"[DROP] Canlı balistik trigger başlatıldı — {len(release_points)} hedef izleniyor")
     for i, rp in enumerate(release_points):
         log.info(f"[DROP]   Hedef {i+1}: {rp['color'].upper()} → ({rp['lat']:.6f},{rp['lon']:.6f})")
 
@@ -203,15 +200,16 @@ async def drop_trigger_task(drone, release_points):
             if dist < config.DROP_TRIGGER_RADIUS_M:
                 log.info(f"[DROP] *** {rp['color'].upper()} TETİKLENİYOR! "
                       f"mesafe={dist:.1f}m < {config.DROP_TRIGGER_RADIUS_M}m ***")
-                if config.USE_FC_SERVO:
-                    servo_no = config.SERVO_KIRMIZI_FC_NO if rp["color"] == "mavi" else config.SERVO_MAVI_FC_NO
-                    release_pwm, neutral_pwm = _servo_pwm_for(servo_no)
-                    await drone.mavlink_direct.send_message(_make_servo_command(servo_no, release_pwm))
-                    await asyncio.sleep(0.5)
-                    await drone.mavlink_direct.send_message(_make_servo_command(servo_no, neutral_pwm))
-                    log.info(f"[DROP] ✓ FC'ye DO_SET_SERVO gönderildi: kanal={servo_no}")
-                else:
-                    await servo.drop_payload(rp["color"])
+                # NOT (2026-08-16): GPIO servo yolu tamamen kaldırıldı — RPi
+                # GPIO'ya hiçbir servo bağlanmayacak, tek yol FC (DO_SET_SERVO).
+                # Eskiden 0.5sn sonra otomatik nötr PWM'e geri dönüyordu — tek
+                # seferlik bırakma için gereksiz, kasıtlı olarak bırak
+                # konumunda BIRAKILIYOR.
+                servo_no = config.SERVO_KIRMIZI_FC_NO if rp["color"] == "mavi" else config.SERVO_MAVI_FC_NO
+                release_pwm, _neutral_pwm = _servo_pwm_for(servo_no)
+                await drone.mavlink_direct.send_message(_make_servo_command(servo_no, release_pwm))
+                log.info(f"[DROP] ✓ FC'ye DO_SET_SERVO gönderildi: kanal={servo_no} "
+                         f"pwm={release_pwm} (nötre dönülmüyor, açık kalıyor)")
                 rp["dropped"] = True
                 log.info(f"[DROP] {rp['color'].upper()} bırakıldı ✓ "
                       f"(kalan: {sum(1 for r in release_points if not r['dropped'])})")
@@ -404,7 +402,7 @@ async def build_and_start_drop_mission(drone, release_points):
     approach_alt_m   = existing[config.SEARCH_START_WP].z
     approach_frame   = existing[config.SEARCH_START_WP].frame
     drop_items = _build_drop_items(release_points, approach_alt_m, approach_frame)
-    log.info(f"[MISSION] {len(drop_items)} drop öğesi oluşturuldu | USE_FC_SERVO={config.USE_FC_SERVO} "
+    log.info(f"[MISSION] {len(drop_items)} drop öğesi oluşturuldu "
              f"| yaklaşma irtifası={approach_alt_m:.1f}m frame={approach_frame}")
 
     home_placeholder = _make_mission_item(0, config.CMD_NAV_WAYPOINT, frame=3)
@@ -436,7 +434,7 @@ async def build_and_start_drop_mission(drone, release_points):
     await drone.mission_raw.start_mission()
     log.info("[MISSION] ✓ start_mission() — drop sekansı başladı (başa sıçrama yok)")
 
-    log.info(f"[MISSION] Canlı balistik drop_trigger_task başlatılıyor | USE_FC_SERVO={config.USE_FC_SERVO}")
+    log.info("[MISSION] Canlı balistik drop_trigger_task başlatılıyor")
     asyncio.create_task(drop_trigger_task(drone, release_points))
 
 

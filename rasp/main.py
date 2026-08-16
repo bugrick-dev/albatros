@@ -4,16 +4,16 @@ TEKNOFEST 2026 - Sabit Kanat - Görev 2
 Giriş noktası.
 
 Pipeline:
-  rpicam-vid (TCP) → FFmpeg decode → OpenCV (tespit+overlay) → FFmpeg encode → GStreamer → WFB-ng
+  rpicam-vid (raw stdout) → OpenCV (tespit+overlay) → FFmpeg encode → GStreamer → WFB-ng
+  (2026-08-16: ara FFmpeg decode adımı kaldırıldı — bkz. vision.py notu)
 
 Modüller:
   config   — tüm sabitler
   state    — paylaşılan değişken global durum
   geo      — coğrafi hesaplamalar
-  servo    — GPIO servo kontrolü
   pipeline — WFB-ng / rpicam-vid süreçleri
   vision   — OpenCV thread
-  mission  — MAVSDK görevleri
+  mission  — MAVSDK görevleri (servo tetikleme dahil — FC üzerinden, GPIO yok)
 """
 import asyncio
 import logging
@@ -24,7 +24,6 @@ from mavsdk import System
 
 import config
 import state
-import servo
 import pipeline
 import vision
 import mission
@@ -46,25 +45,22 @@ async def run():
     log.info(f"  WFB     : MAC={config.WFB_MAC}  kanal={config.WFB_CHANNEL}")
     log.info(f"  Tarama  : WP {config.SEARCH_START_WP} → {config.SEARCH_SPEED_MS}m/s | "
           f"loop çıkış WP={config.SEARCH_LOOP_EXIT_WP}")
-    log.info(f"  Drop    : tetik={config.DROP_TRIGGER_RADIUS_M}m | "
-          f"USE_FC_SERVO={config.USE_FC_SERVO}")
+    log.info(f"  Drop    : tetik={config.DROP_TRIGGER_RADIUS_M}m (FC servo)")
     log.info(f"  Tespit  : WP {config.DETECTION_ACTIVE_WP}'de aktif")
     log.info("=" * 60)
 
-    # 1. GPIO servo başlat
-    servo.init_servo()
-
-    # 2. WiFi monitor mode
+    # 1. WiFi monitor mode
+    # NOT (2026-08-16): GPIO servo yolu kaldırıldı — yükler artık sadece FC
+    # üzerinden (DO_SET_SERVO) tetikleniyor, RPi GPIO'ya hiçbir servo
+    # bağlanmayacak (bkz. servo.py silindi, mission.py drop_trigger_task).
     iface = pipeline.setup_monitor_mode()
     if not iface:
         log.info("[MAIN] Monitor mode kurulamadı — çıkılıyor")
-        servo.cleanup_servo()
         sys.exit(1)
 
-    # 3. Video pipeline (WFB-ng + rpicam)
+    # 2. Video pipeline (WFB-ng + rpicam)
     if not pipeline.start_pipeline(iface):
         log.info("[MAIN] Pipeline başlatılamadı — çıkılıyor")
-        servo.cleanup_servo()
         sys.exit(1)
 
     # 4. OpenCV thread
@@ -133,7 +129,6 @@ async def run():
         log.info("[MAIN] Temizleniyor...")
         state.shutdown_requested.set()
         pipeline.stop_pipeline()
-        servo.cleanup_servo()
         log.info("[MAIN] ✓ Temizlik tamamlandı")
 
 
@@ -145,4 +140,3 @@ if __name__ == "__main__":
         log.info("\n[MAIN] Ctrl+C — durduruldu")
         state.shutdown_requested.set()
         pipeline.stop_pipeline()
-        servo.cleanup_servo()
