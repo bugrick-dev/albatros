@@ -437,6 +437,14 @@ def opencv_processing_thread(queue):
                     log.info(f"[VISION][STATUS] Telemetri: "
                           f"lat={tel['lat']:.6f} lon={tel['lon']:.6f} "
                           f"alt={tel['alt']:.1f}m yaw={tel['yaw']:.1f}°")
+                # GPS/EKF durumu (checklist "GPS ve heading" — 2026-08-16): tespit
+                # anında bunlar şüpheliyse (fix_type düşük, global_position_ok=False)
+                # o tespite güvenilmemeli, offline analizde bu satırlar aranmalı.
+                gh, eh = state.gps_health, state.ekf_health
+                if gh["fix_type"] is not None:
+                    log.info(f"[VISION][STATUS] GPS/EKF: uydu={gh['num_satellites']} "
+                          f"fix={gh['fix_type']} global_ok={eh['global_position_ok']} "
+                          f"local_ok={eh['local_position_ok']} home_ok={eh['home_position_ok']}")
                 debug_timer = now
 
         except Exception as e:

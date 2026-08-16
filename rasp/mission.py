@@ -119,9 +119,48 @@ async def speed_track_task(drone):
     """
     log.info("[SPEED_TRACK] Yer hızı akışı başlatıldı")
     async for vel in drone.telemetry.velocity_ned():
+        now = time.monotonic()
         speed = math.hypot(vel.north_m_s, vel.east_m_s)
         with state.telemetry_lock:
             state.current_telemetry["speed"] = speed
+            state.speed_history.append((now, speed, vel.north_m_s, vel.east_m_s))
+
+
+async def gps_health_task(drone):
+    """
+    Uydu sayısı/fix tipi + EKF-eşdeğeri (Health) durumunu izler ve loglar
+    (checklist "GPS ve heading" — 2026-08-16). Tek başına HDOP/uydu sayısı
+    yüzlerce metrelik hatayı açıklamaz (bkz. commit notu) ama fix_type
+    düşerse (ör. RTK_FIXED -> FIX_3D) veya global_position_ok False olursa
+    bu, o anki tespitlerin şüpheli sayılması için güçlü bir sinyaldir.
+    """
+    log.info("[GPS_HEALTH] Uydu/EKF izleyici başlatıldı")
+
+    async def _gps_info_loop():
+        prev_fix = None
+        async for info in drone.telemetry.gps_info():
+            with state.telemetry_lock:
+                state.gps_health["num_satellites"] = info.num_satellites
+                state.gps_health["fix_type"]       = str(info.fix_type)
+            if info.fix_type != prev_fix:
+                log.info(f"[GPS_HEALTH] fix_type değişti: {prev_fix} -> {info.fix_type} "
+                         f"(uydu={info.num_satellites})")
+                prev_fix = info.fix_type
+
+    async def _health_loop():
+        prev = None
+        async for h in drone.telemetry.health():
+            snap = (h.is_global_position_ok, h.is_local_position_ok, h.is_home_position_ok)
+            with state.telemetry_lock:
+                state.ekf_health["global_position_ok"] = h.is_global_position_ok
+                state.ekf_health["local_position_ok"]  = h.is_local_position_ok
+                state.ekf_health["home_position_ok"]   = h.is_home_position_ok
+            if snap != prev:
+                log.info(f"[GPS_HEALTH] health değişti: global_ok={h.is_global_position_ok} "
+                         f"local_ok={h.is_local_position_ok} home_ok={h.is_home_position_ok}")
+                prev = snap
+
+    await asyncio.gather(_gps_info_loop(), _health_loop())
 
 
 # ==================== CANLI BALİSTİK DROP TETİKLEME ====================

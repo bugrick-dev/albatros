@@ -121,6 +121,7 @@ async def run():
             mission.telemetry_task(drone),
             mission.attitude_task(drone),
             mission.speed_track_task(drone),
+            mission.gps_health_task(drone),
             mission.mission_task(drone, state.target_queue),
             mission.speed_management_task(drone),
             mission.detection_activation_task(drone),

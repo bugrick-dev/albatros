@@ -27,6 +27,14 @@ current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None, "roll":
 TELEMETRY_HISTORY_MAXLEN = 200
 position_history  = deque(maxlen=TELEMETRY_HISTORY_MAXLEN)  # (ts, lat, lon, alt)
 attitude_history   = deque(maxlen=TELEMETRY_HISTORY_MAXLEN)  # (ts, yaw, roll, pitch)
+speed_history      = deque(maxlen=TELEMETRY_HISTORY_MAXLEN)  # (ts, speed, vel_north_m_s, vel_east_m_s)
+
+# --- GPS/EKF sağlık durumu (checklist "GPS ve heading" — 2026-08-16) ---
+# MAVSDK'nın Health akışı en yakın "EKF durumu" eşdeğeri (ham EKF flag'leri
+# değil ama is_global_position_ok/is_local_position_ok fiilen aynı amaca
+# hizmet ediyor — çoğu GCS de bunu böyle gösterir).
+gps_health = {"num_satellites": None, "fix_type": None}
+ekf_health = {"global_position_ok": None, "local_position_ok": None, "home_position_ok": None}
 
 
 def nearest_telemetry_at(ts):
