@@ -115,7 +115,14 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
 
     # Gövde → dünya: önce roll (gövde X ekseni), sonra pitch (gövde Y), sonra yaw
     # (dünya Z ekseni) — standart havacılık Euler sırası, ZYX'in tersten uygulanışı.
-    ray_world = _rz(math.radians(yaw_deg)) @ _ry(math.radians(-pitch_deg)) @ _rx(math.radians(roll_deg)) @ ray_body
+    #
+    # DÜZELTME (2026-08-16): pitch_deg önünde gereksiz eksi işareti vardı —
+    # burun yukarı (pitch>0) hedefi YAKINLAŞTIRIYORDU, oysa kamera zaten 45°
+    # aşağı bakarken burun kalkınca ufka yaklaşır, hedef UZAKLAŞMALI. Test
+    # scriptiyle doğrulandı: pitch=+15°/merkez piksel/roll=0 → düzeltmeden
+    # önce 28.87m (yanlış, yakın), düzeltmeden sonra 86.60m (doğru, uzak).
+    # 200-300m'lik saha sapmalarının olası kök nedenlerinden biri.
+    ray_world = _rz(math.radians(yaw_deg)) @ _ry(math.radians(pitch_deg)) @ _rx(math.radians(roll_deg)) @ ray_body
 
     if ray_world[2] <= 0.05:
         log.info(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: ışın ufka çok yakın/üstünde "
