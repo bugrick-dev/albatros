@@ -88,7 +88,11 @@ WFB_FEC_K          = 4
 WFB_FEC_N          = 12     # 3x FEC yedekliliği — sahada ölçülüp doğrulandı
 # T3U Plus (RTL8812BU, 88x2bu) donanım tavanı: 3100 mBm kabul ediliyor,
 # 3200 mBm reddediliyor (region/reg-domain bu kartta gerçek gücü sınırlamıyor).
-WFB_TXPOWER_MBM    = 3100
+# 3100'de yük altında ~2-3 dk'da bir USB disconnect (rtl88x2bu Runtime PM
+# underflow) gözlendi; rtw_smart_ps=0 (bkz. /etc/modprobe.d/88x2bu.conf) ile
+# birlikte 3000'de 23+ dk kesintisiz test edildi (2026-08-16). Menzil kaybı
+# ~yok denecek kadar az (31→30 dBm, ~1dB).
+WFB_TXPOWER_MBM    = 3000
 
 # --- Port numaraları ---
 RPICAM_TCP_PORT = 8888
@@ -153,7 +157,7 @@ MAX_PITCH_FOR_DETECTION_DEG = 30.0
 # yüzlerce metre oynatabiliyor (dt/dθ, θ küçüldükçe patlıyor). ORBIT_RADIUS_M
 # ve arama koridoru göz önüne alınarak seçildi — Gazebo'da farklı irtifa/FOV
 # kombinasyonlarıyla yeniden doğrulanmalı, gerekirse ayarlanmalı.
-MAX_DETECTION_DISTANCE_M = 100.0
+MAX_DETECTION_DISTANCE_M = 200.0
 
 # --- Hedef izleme: en-yakın-nokta kilidi (bkz. vision._update_detection) ---
 # 45° açılı montaj KORUNUYOR (erken tespit/orbit planlama için gerekli,
@@ -201,7 +205,7 @@ SERVO_MAVI_YUK_PIN    = 23   # mavi boyalı yük    → kırmızı hedefe
 
 # --- Uçuş parametreleri ---
 DRONE_SPEED_MS             = 15.0
-DROP_TRIGGER_RADIUS_M      = 20
+DROP_TRIGGER_RADIUS_M      = 40
 SCAN_EXIT_DELAY_SEC        = 15
 SINGLE_TARGET_TIMEOUT_SEC  = 30
 FC_CONNECT_TIMEOUT_SEC     = 10   # FC bağlantısı kurulamazsa video-only moda geç
