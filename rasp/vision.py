@@ -73,6 +73,39 @@ def _to_stream_contour(contour):
     return contour
 
 
+def _mask_debug_info(mask):
+    """
+    Tanı amaçlı (2026-08-17): mavi/kırmızı hiç tespit edilmiyorken sorunun RENK
+    (HSV aralığı hiçbir pikseli yakalamıyor) mi yoksa ŞEKİL (renk tutuyor ama
+    is_square/alan filtresi reddediyor) mi olduğunu ayırt etmek için — 13-17
+    Ağustos loglarında tek bir başarılı tespit yok, körlemesine HSV ayarlamak
+    yerine bir sonraki testte gerçek sayı görmek gerekiyor.
+    """
+    pixel_count = int(cv2.countNonZero(mask))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return {"pixels": pixel_count, "candidate": None}
+    largest = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(largest)
+    perimeter = cv2.arcLength(largest, True)
+    approx = cv2.approxPolyDP(largest, 0.02 * perimeter, True)
+    rect = cv2.minAreaRect(largest)
+    w, h = rect[1]
+    ratio = round(max(w, h) / min(w, h), 2) if w > 0 and h > 0 else None
+    extent = round(area / (w * h), 2) if w > 0 and h > 0 else None
+    return {
+        "pixels": pixel_count,
+        "candidate": {
+            "area": int(area),
+            "in_area_range": config.MIN_AREA < area < config.MAX_AREA,
+            "corners": len(approx),
+            "convex": bool(cv2.isContourConvex(approx)),
+            "ratio": ratio,
+            "extent": extent,
+        },
+    }
+
+
 def _detect_square_in_mask(mask):
     """
     Maskede geçerli ilk kareyi arar.
@@ -433,6 +466,22 @@ def opencv_processing_thread(queue):
                 log.info(f"[VISION][STATUS] FPS={current_fps} | "
                       f"mavi={mavi_str} kirmizi={kirmizi_str} | "
                       f"tespit={detection_str} | kuyruk={queue.qsize()}")
+
+                # Tanı: tespit edilemeyen renkler için RENK mi ŞEKİL mi sorunu ayır
+                for _color, _mask in (("mavi", mask_blue), ("kirmizi", mask_red)):
+                    if state.detected_targets[_color]:
+                        continue
+                    info = _mask_debug_info(_mask)
+                    if info["candidate"] is None:
+                        log.info(f"[VISION][DEBUG] {_color}: maskede HİÇ piksel/kontur yok "
+                              f"(pixel={info['pixels']}) — HSV aralığı bu kareyi hiç yakalamıyor")
+                    else:
+                        c = info["candidate"]
+                        log.info(f"[VISION][DEBUG] {_color}: en büyük aday alan={c['area']} "
+                              f"(aralıkta={c['in_area_range']}, MIN={config.MIN_AREA} MAX={config.MAX_AREA}) "
+                              f"köşe={c['corners']} dışbükey={c['convex']} "
+                              f"oran={c['ratio']} doluluk={c['extent']} "
+                              f"(pixel_toplam={info['pixels']})")
                 if tel["lat"] is not None:
                     log.info(f"[VISION][STATUS] Telemetri: "
                           f"lat={tel['lat']:.6f} lon={tel['lon']:.6f} "

@@ -52,9 +52,22 @@ BLUE_H_MIN, BLUE_H_MAX =  95, 135
 BLUE_S_MIN, BLUE_S_MAX =  60, 255
 BLUE_V_MIN, BLUE_V_MAX =  35, 255
 
+# 2026-08-17: gerçek uçuş kaydından alınan bir kareden (26.9m ALT, WP 14/19)
+# cv2 ile PİXEL-EXACT ölçüldü (artık gözle tahmin değil):
+#   MAVİ  iç bölge: H≈105-106, S≈183-187, V≈244-248 — mevcut BLUE_HSV aralığının
+#         (95-135/60-255/35-255) TAMAMEN içinde, örneklenen pikselin %100'ü
+#         maskeden geçiyor. Yani mavi için HSV hiç sorun değilmiş; MAVİ: --
+#         sorunu is_square/ekstent tarafındandı (bkz. yukarıdaki ASPECT_RATIO/
+#         SQUARE_MIN_EXTENT notu, 45° kamera açısı → trapezoid görünüm).
+#   KIRMIZI/PEMBE panel: H≈154-163 (medyan 162), S≈51-124 (medyan 116, p5=51),
+#         V≈105-120 — klasik kırmızı değil, gerçekten pembe/magenta'ya kaymış.
+#         Eski RED2_H_MIN=170 bunu TAMAMEN dışarıda bırakıyordu (RED1 0-10 ve
+#         RED2 170-180 ikisi de kapsamıyordu). RED2_H_MIN önce 150'ye çekildi;
+#         ölçümle test edilince o aralık pikselin %84'ünü yakalıyordu — S_MIN=80
+#         alt kuyruğu (S=51-79) fazla kesiyordu, 65'e indirildi (marj için).
 RED1_H_MIN, RED1_H_MAX =   0,  10
-RED2_H_MIN, RED2_H_MAX = 170, 180
-RED_S_MIN,  RED_S_MAX  =  80, 255
+RED2_H_MIN, RED2_H_MAX = 150, 180
+RED_S_MIN,  RED_S_MAX  =  65, 255
 RED_V_MIN,  RED_V_MAX  =  50, 255
 
 # --- HSV eşik dizileri (cv2.inRange'de doğrudan kullanılır) ---
@@ -67,12 +80,23 @@ RED2_HSV_UPPER = np.array([RED2_H_MAX, RED_S_MAX,  RED_V_MAX])
 
 # --- Kare tespiti ---
 SQUARE_CORNER_TOLERANCE = 4
-ASPECT_RATIO_MIN = 0.7
-ASPECT_RATIO_MAX = 1.3
-# Doluluk oranı (kontur alanı / bounding box alanı): kare ~0.9-1.0, altıgen ~0.65-0.87,
-# üçgen ~0.5 — yarışma alanındaki altıgen/üçgen şekilleri kesin olarak elemek için
-# (4 köşeye yaklaşma + en-boy oranı tek başına bunları ayırt edemiyor, 2026-07-26).
-SQUARE_MIN_EXTENT = 0.85
+# 2026-08-17: kamera CAMERA_PITCH=45° eğik monteli — yerdeki kare hedef nadir
+# değil, perspektifle "keystone" trapezoide benzer şekilde görünüyor (yakın kenar
+# geniş, uzak kenar dar). Bu, minAreaRect en-boy oranını 1'den saha testlerinde
+# gözlemlendiği kadar uzaklaştırabiliyor — eski 0.7-1.3 aralığı sahada gerçek
+# hedefi reddediyordu, bu yüzden gevşetildi.
+ASPECT_RATIO_MIN = 0.55
+ASPECT_RATIO_MAX = 1.7
+# Doluluk oranı (kontur alanı / bounding box alanı): kare (nadir'den) ~0.9-1.0,
+# altıgen ~0.65-0.87, üçgen ~0.5 — yarışma alanındaki altıgen/üçgen şekilleri
+# kesin olarak elemek için (4 köşeye yaklaşma + en-boy oranı tek başına bunları
+# ayırt edemiyor, 2026-07-26). 2026-08-17: 45° eğik kameradan görülen bir kare de
+# trapezoide benzediği için doluluğu düşüyor (simetrik trapezoid modeli: extent ≈
+# (1+t)/2, t=uzak/yakın kenar oranı) — 0.85 gerçek hedefi de eleyebiliyordu, 0.78'e
+# indirildi. NOT: bu, altıgen aralığının (0.65-0.87) üst ucuyla örtüşüyor — hâlâ
+# yanlış pozitif riski var, sahada _mask_debug_info loglarındaki gerçek
+# oran/doluluk değerleriyle daha da kalibre edilmeli.
+SQUARE_MIN_EXTENT = 0.78
 
 # --- WFB-ng ---
 WFB_MAC      = "6c:4c:bc:0a:62:a0"
