@@ -9,6 +9,7 @@ import state
 
 log = logging.getLogger("pipeline")
 WFB_TX_LOG_PATH = "/home/albatros/logs/wfb_tx.log"
+RPICAM_LOG_PATH = "/home/albatros/logs/rpicam.log"
 
 
 def _find_iface_by_mac():
@@ -156,6 +157,38 @@ def _wfb_watchdog(iface):
     log.info("[WATCHDOG] Kapanış sinyali alındı, izleyici durdu")
 
 
+def _spawn_rpicam():
+    rpicam_cmd = (
+        f"rpicam-vid -t 0 --codec yuv420 "
+        f"--width {config.WIDTH} --height {config.HEIGHT} --framerate {config.FPS} "
+        f"-o -"
+    )
+    log.info(f"[PIPELINE] rpicam-vid komutu: {rpicam_cmd}")
+    rpicam_stderr = open(RPICAM_LOG_PATH, "ab")
+    state.rpicam_process = subprocess.Popen(
+        shlex.split(rpicam_cmd), stdout=subprocess.PIPE, stderr=rpicam_stderr
+    )
+    log.info(f"[PIPELINE] rpicam-vid başladı → PID={state.rpicam_process.pid} (raw stdout)")
+
+
+def restart_rpicam():
+    """rpicam-vid öldüğünde (EOF — bkz. vision._frame_reader) süreci yeniden
+    başlatır. Eski davranış: EOF sonsuz 'Eksik frame' busy-loop'una dönüyordu
+    ve video bir daha gelmiyordu (watchdog yalnızca wfb_tx'i izliyordu)."""
+    old = state.rpicam_process
+    if old is not None:
+        try:
+            if old.poll() is None:
+                old.kill()
+            old.wait(timeout=2)
+        except Exception as e:
+            log.info(f"[PIPELINE] Eski rpicam süreci kapatılamadı: {e}")
+    try:
+        _spawn_rpicam()
+    except Exception as e:
+        log.info(f"[PIPELINE] rpicam yeniden başlatma HATA: {e}")
+
+
 def start_pipeline(iface):
     """WFB-ng transmitter ve rpicam-vid süreçlerini başlatır."""
     log.info("\n[PIPELINE] Pipeline başlatılıyor...")
@@ -186,17 +219,7 @@ def start_pipeline(iface):
     # CPU + gecikme). Artık rpicam-vid doğrudan raw veriyor, vision.py TEK bir
     # ffmpeg (encode, transmisyon için) kullanıyor (2026-08-16, çift codec turu
     # kaldırıldı — bkz. vision.py cv2.cvtColor I420->BGR notu).
-    rpicam_cmd = (
-        f"rpicam-vid -t 0 --codec yuv420 "
-        f"--width {config.WIDTH} --height {config.HEIGHT} --framerate {config.FPS} "
-        f"-o -"
-    )
-    log.info(f"[PIPELINE] rpicam-vid komutu: {rpicam_cmd}")
-    rpicam_stderr = open("/home/albatros/logs/rpicam.log", "wb")
-    state.rpicam_process = subprocess.Popen(
-        shlex.split(rpicam_cmd), stdout=subprocess.PIPE, stderr=rpicam_stderr
-    )
-    log.info(f"[PIPELINE] rpicam-vid başladı → PID={state.rpicam_process.pid} (raw stdout)")
+    _spawn_rpicam()
     time.sleep(5)
 
     watchdog_thread = threading.Thread(target=_wfb_watchdog, args=(iface,), daemon=True)

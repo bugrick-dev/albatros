@@ -122,6 +122,8 @@ async def speed_track_task(drone):
         speed = math.hypot(vel.north_m_s, vel.east_m_s)
         with state.telemetry_lock:
             state.current_telemetry["speed"] = speed
+            state.current_telemetry["vel_n"] = vel.north_m_s
+            state.current_telemetry["vel_e"] = vel.east_m_s
             state.speed_history.append((now, speed, vel.north_m_s, vel.east_m_s))
 
 
@@ -164,60 +166,117 @@ async def gps_health_task(drone):
 
 # ==================== CANLI BALİSTİK DROP TETİKLEME ====================
 
+async def _trigger_release(drone, rp, release_points):
+    """FC'ye DO_SET_SERVO gönderip yükü bırakır (şartname eşlemesi: MAVİ hedefe
+    KIRMIZI yük, KIRMIZI hedefe MAVİ yük — çapraz eşleme KASITLI)."""
+    # NOT (2026-08-16): GPIO servo yolu tamamen kaldırıldı — RPi GPIO'ya
+    # hiçbir servo bağlanmayacak, tek yol FC (DO_SET_SERVO). Eskiden 0.5sn
+    # sonra otomatik nötr PWM'e dönülüyordu — tek seferlik bırakma için
+    # gereksiz, kasıtlı olarak bırak konumunda BIRAKILIYOR.
+    servo_no = config.SERVO_KIRMIZI_FC_NO if rp["color"] == "mavi" else config.SERVO_MAVI_FC_NO
+    release_pwm, _neutral_pwm = _servo_pwm_for(servo_no)
+    await drone.mavlink_direct.send_message(_make_servo_command(servo_no, release_pwm))
+    log.info(f"[DROP] ✓ FC'ye DO_SET_SERVO gönderildi: kanal={servo_no} "
+             f"pwm={release_pwm} (nötre dönülmüyor, açık kalıyor)")
+    rp["dropped"] = True
+    log.info(f"[DROP] {rp['color'].upper()} bırakıldı ✓ "
+          f"(kalan: {sum(1 for r in release_points if not r['dropped'])})")
+
+
 async def drop_trigger_task(drone, release_points):
     """
-    Her telemetri tik'inde GÜNCEL hız/irtifa/yaw ile calculate_drop_point()'i
-    yeniden hesaplar (hedefin kendisi rp['lat']/rp['lon']'da sabit tutulur,
-    balistik ofset her seferinde taze hesaplanır) — tespit anındaki eski/
-    varsayılan hıza güvenilmez. O anki konum canlı hesaplanan drop noktasına
-    DROP_TRIGGER_RADIUS_M'den yakınsa tetikler: FC'ye DO_SET_SERVO komutu
-    gönderilir (GPIO servo yolu kaldırıldı, 2026-08-16).
+    Her pozisyon tik'inde GÜNCEL hız/irtifa ile calculate_drop_point()'i
+    yeniden hesaplar (hedefin kendisi rp['lat']/rp['lon']'da sabit, balistik
+    ofset taze) ve bırakma kararını along/cross-track ayrışımıyla verir
+    (2026-08-17 — eski davranış: release noktasına 40m'ye girildiği AN
+    bırakılıyordu; bu (a) 40m'ye kadar konum hatasına izin veriyordu
+    (şartname 20m dışını 0 puan sayar), (b) rota başka bacaktayken —
+    ör. öteki hedefe ya da dönüş WP'sine giderken — noktanın 40m yakınından
+    geçilirse YANLIŞ tetikliyordu):
+
+      1. KURMA: release noktasına mesafe DROP_TRIGGER_RADIUS_M içine girince
+         o hedef için değerlendirme başlar.
+      2. Rota (course, hız vektöründen — rüzgar crab'i nedeniyle yaw DEĞİL)
+         ile release noktasına kerteriz ayrışımı: along = ileri kalan mesafe,
+         cross = dik sapma.
+      3. TETİK: along-track kalan süre DROP_ALONG_TRIGGER_S altına inince VE
+         |cross| <= DROP_MAX_CROSS_TRACK_M ise bırak. Cross fazlaysa bırakma
+         (log'la) — 0 puanlık atış yerine sonraki geçişi bekle: misyonda aynı
+         WP'ye tekrar gelinmez ama uçuş süresi elverdikçe GCS'den yeni geçiş
+         komutu verilebilir; kötü atışı erken sabitlemekten iyidir.
+      4. Emniyet ağı: nokta değerlendirme penceresindeyken along işaret
+         değiştirir (nokta geçilmiş) ve cross uygunsa hemen bırak — akış
+         tik'i tam tetik anını kaçırdıysa bir tik gecikmeli telafi.
+
+    Balistik ofset yönü de artık yaw yerine course ile hesaplanıyor: yük
+    bırakıldığında uçağın burnu değil, yer hızı vektörü yönünde savrulur.
     """
     log.info(f"[DROP] Canlı balistik trigger başlatıldı — {len(release_points)} hedef izleniyor")
     for i, rp in enumerate(release_points):
         log.info(f"[DROP]   Hedef {i+1}: {rp['color'].upper()} → ({rp['lat']:.6f},{rp['lon']:.6f})")
+        rp["armed"] = False
+        rp["prev_along"] = None
 
     check_count = 0
     async for pos in drone.telemetry.position():
         check_count += 1
         with state.telemetry_lock:
             tel = state.current_telemetry.copy()
-        if tel["speed"] is None or tel["yaw"] is None:
-            await asyncio.sleep(0.05)
+        if tel["speed"] is None or tel["vel_n"] is None or tel["speed"] < 1.0:
             continue
+
+        course_deg = math.degrees(math.atan2(tel["vel_e"], tel["vel_n"]))
 
         for rp in release_points:
             if rp["dropped"]:
                 continue
             release_lat, release_lon = geo.calculate_drop_point(
-                rp["lat"], rp["lon"], pos.relative_altitude_m, tel["speed"], tel["yaw"],
+                rp["lat"], rp["lon"], pos.relative_altitude_m, tel["speed"], course_deg,
             )
             dist = geo.haversine(pos.latitude_deg, pos.longitude_deg, release_lat, release_lon)
-            if check_count % 10 == 0:
-                log.info(f"[DROP] {rp['color'].upper()} canlı drop noktasına mesafe: {dist:.1f}m "
-                      f"(hız={tel['speed']:.1f}m/s alt={pos.relative_altitude_m:.1f}m | "
-                      f"eşik: {config.DROP_TRIGGER_RADIUS_M}m)")
-            if dist < config.DROP_TRIGGER_RADIUS_M:
+
+            if not rp["armed"]:
+                if dist < config.DROP_TRIGGER_RADIUS_M:
+                    rp["armed"] = True
+                    log.info(f"[DROP] {rp['color'].upper()} KURULDU (mesafe={dist:.1f}m < "
+                             f"{config.DROP_TRIGGER_RADIUS_M}m) — along/cross izleniyor")
+                else:
+                    if check_count % 10 == 0:
+                        log.info(f"[DROP] {rp['color'].upper()} drop noktasına {dist:.1f}m "
+                              f"(kurma eşiği {config.DROP_TRIGGER_RADIUS_M}m)")
+                    continue
+
+            bearing = geo.bearing_deg(pos.latitude_deg, pos.longitude_deg,
+                                      release_lat, release_lon)
+            rel_rad = math.radians(geo.wrap180(bearing - course_deg))
+            along   = dist * math.cos(rel_rad)   # + : nokta önümüzde
+            cross   = abs(dist * math.sin(rel_rad))
+            time_to = along / tel["speed"]
+
+            log.info(f"[DROP] {rp['color'].upper()} along={along:.1f}m cross={cross:.1f}m "
+                     f"t={time_to:.2f}s (hız={tel['speed']:.1f}m/s alt={pos.relative_altitude_m:.1f}m)")
+
+            passed = rp["prev_along"] is not None and rp["prev_along"] > 0 and along <= 0
+            rp["prev_along"] = along
+
+            if cross > config.DROP_MAX_CROSS_TRACK_M:
+                if along <= 0:
+                    # Noktayı yandan kaçırarak geçtik — bırakmadık, yeniden kur.
+                    log.info(f"[DROP] ⚠ {rp['color'].upper()} geçiş ISKA: cross={cross:.1f}m > "
+                             f"{config.DROP_MAX_CROSS_TRACK_M}m — bırakılmadı, sonraki geçiş bekleniyor")
+                    rp["armed"] = False
+                    rp["prev_along"] = None
+                continue
+
+            if (0 <= time_to <= config.DROP_ALONG_TRIGGER_S) or passed:
                 log.info(f"[DROP] *** {rp['color'].upper()} TETİKLENİYOR! "
-                      f"mesafe={dist:.1f}m < {config.DROP_TRIGGER_RADIUS_M}m ***")
-                # NOT (2026-08-16): GPIO servo yolu tamamen kaldırıldı — RPi
-                # GPIO'ya hiçbir servo bağlanmayacak, tek yol FC (DO_SET_SERVO).
-                # Eskiden 0.5sn sonra otomatik nötr PWM'e geri dönüyordu — tek
-                # seferlik bırakma için gereksiz, kasıtlı olarak bırak
-                # konumunda BIRAKILIYOR.
-                servo_no = config.SERVO_KIRMIZI_FC_NO if rp["color"] == "mavi" else config.SERVO_MAVI_FC_NO
-                release_pwm, _neutral_pwm = _servo_pwm_for(servo_no)
-                await drone.mavlink_direct.send_message(_make_servo_command(servo_no, release_pwm))
-                log.info(f"[DROP] ✓ FC'ye DO_SET_SERVO gönderildi: kanal={servo_no} "
-                         f"pwm={release_pwm} (nötre dönülmüyor, açık kalıyor)")
-                rp["dropped"] = True
-                log.info(f"[DROP] {rp['color'].upper()} bırakıldı ✓ "
-                      f"(kalan: {sum(1 for r in release_points if not r['dropped'])})")
+                      f"along={along:.1f}m cross={cross:.1f}m t={time_to:.2f}s "
+                      f"{'(geçiş telafisi)' if passed else ''} ***")
+                await _trigger_release(drone, rp, release_points)
 
         if all(rp["dropped"] for rp in release_points):
             log.info("[DROP] ✓ Tüm yükler bırakıldı — drop_trigger_task sonlanıyor")
             break
-        await asyncio.sleep(0.1)
 
 
 # ==================== HIZ YÖNETİMİ ====================
@@ -282,7 +341,11 @@ async def speed_management_task(drone):
           f"{config.SEARCH_SPEED_MS}m/s'ye düşülecek")
     async for progress in drone.mission_raw.mission_progress():
         log.info(f"[SPEED] Misyon ilerleme: WP {progress.current}/{progress.total}")
-        if progress.current == config.SEARCH_START_WP:
+        # >= (== değil, 2026-08-17): tek bir progress olayı kaçarsa/atlanırsa
+        # (ör. 3→5) hız düşürme HİÇ tetiklenmiyordu ve tarama 15m/s'de
+        # yapılıyordu — detection_activation_task'taki mantıkla aynı hizaya
+        # getirildi.
+        if progress.current >= config.SEARCH_START_WP:
             log.info(f"[SPEED] WP {config.SEARCH_START_WP} ulaşıldı → "
                   f"DO_CHANGE_SPEED={config.SEARCH_SPEED_MS}m/s gönderiliyor...")
             try:
@@ -393,6 +456,19 @@ async def build_and_start_drop_mission(drone, release_points):
     log.info(f"[MISSION] İniş sekansı: WP {config.SEARCH_LOOP_EXIT_WP}'den itibaren "
           f"{len(landing_items)} öğe alındı")
 
+    # DO_JUMP koruması (2026-08-17): kopyalanan iniş sekansında DO_JUMP varsa
+    # param1'i ESKİ misyonun index'ini gösterir — yeni misyonda tüm seq'ler
+    # kaydığı için uçak öngörülemez bir öğeye atlar. Böyle bir öğe iniş
+    # sekansında zaten olmamalı (arama döngüsünün DO_JUMP'ı SEARCH_LOOP_EXIT_WP
+    # ÖNCESİNDE kalır); yine de GCS planı yanlış kurulursa sessiz felaket
+    # olmasın diye öğe atılır ve yüksek sesle loglanır.
+    jumps = [it for it in landing_items if it.command == config.CMD_DO_JUMP]
+    if jumps:
+        log.info(f"[MISSION] ⚠ UYARI: iniş sekansında {len(jumps)} DO_JUMP öğesi bulundu — "
+                 f"index'ler yeni misyonda geçersiz olacağından bu öğeler ATILDI. "
+                 f"GCS planını ve SEARCH_LOOP_EXIT_WP'yi kontrol edin!")
+        landing_items = [it for it in landing_items if it.command != config.CMD_DO_JUMP]
+
     return_item = _make_return_to_search_entry_item(existing)
     log.info(f"[MISSION] Tarama girişine dönüş öğesi eklendi (SEARCH_START_WP={config.SEARCH_START_WP} konumu)")
 
@@ -434,8 +510,11 @@ async def build_and_start_drop_mission(drone, release_points):
     await drone.mission_raw.start_mission()
     log.info("[MISSION] ✓ start_mission() — drop sekansı başladı (başa sıçrama yok)")
 
-    log.info("[MISSION] Canlı balistik drop_trigger_task başlatılıyor")
-    asyncio.create_task(drop_trigger_task(drone, release_points))
+    if release_points:
+        log.info("[MISSION] Canlı balistik drop_trigger_task başlatılıyor")
+        asyncio.create_task(drop_trigger_task(drone, release_points))
+    else:
+        log.info("[MISSION] Hedef yok — drop_trigger_task başlatılmadı (yalnızca iniş)")
 
 
 # ==================== WP TAKİBİ ====================
@@ -465,10 +544,32 @@ async def mission_task(drone, queue):
     log.info("[MISSION] mission_task başladı — hedef tespiti bekleniyor")
     release_points       = []
     first_detection_time = None
+    search_deadline      = None
+    last_wait_log        = 0.0
 
     while len(release_points) < 2:
+        # Genel tarama zaman aşımı (2026-08-17): tespit aktifleştikten sonra
+        # sayaç başlar. HİÇ hedef bulunamazsa arama döngüsü (DO_JUMP) sonsuza
+        # dek dönerdi — şartnamede Görev 2 azami 10 dk, aşımı uçuşu geçersiz
+        # kılıyor. Süre dolunca eldeki hedeflerle (0 dahil) iniş sekansına geçilir.
+        now_m = time.monotonic()
+        if search_deadline is None and state.detection_active.is_set():
+            search_deadline = now_m + config.SEARCH_TOTAL_TIMEOUT_SEC
+            log.info(f"[MISSION] Tarama sayacı başladı — azami "
+                     f"{config.SEARCH_TOTAL_TIMEOUT_SEC}s sonra eldekiyle çıkılacak")
+        if search_deadline is not None and now_m > search_deadline:
+            log.info(f"[MISSION] ⚠ Tarama zaman aşımı ({config.SEARCH_TOTAL_TIMEOUT_SEC}s) — "
+                     f"{len(release_points)} hedefle iniş sekansına geçiliyor")
+            break
+
         try:
-            target = queue.get(timeout=0.5)
+            # get_nowait (2026-08-17): eskiden queue.get(timeout=0.5) SENKRON
+            # çağrısı asyncio event loop'unu her turda 0.5s BLOKLUYORDU — tüm
+            # arama fazı boyunca telemetri/attitude akışları gecikip zaman
+            # damgaları kayıyor, vision'ın frame-anı telemetri eşleşmesini
+            # (nearest_telemetry_at) bozuyordu. GPS sapmalarının ("277m")
+            # kök nedenlerinden biri.
+            target = queue.get_nowait()
             log.info(f"[MISSION] Kuyruktan alındı: {target['color'].upper()} "
                   f"({target['lat']:.6f},{target['lon']:.6f})")
         except Empty:
@@ -479,8 +580,9 @@ async def mission_task(drone, queue):
                     log.info(f"[MISSION] ⚠ Timeout ({config.SINGLE_TARGET_TIMEOUT_SEC}s) doldu — "
                           f"tek hedefle devam ediliyor")
                     break
-                if int(remaining) % 5 == 0:
+                if now_m - last_wait_log >= 5.0:
                     log.info(f"[MISSION] İkinci hedef bekleniyor... (kalan≈{remaining:.0f}s)")
+                    last_wait_log = now_m
             await asyncio.sleep(0.1)
             continue
 
@@ -515,8 +617,13 @@ async def mission_task(drone, queue):
               f"({target['lat']:.6f},{target['lon']:.6f}) — "
               f"{len(release_points)}/2 hedef toplandı")
 
-    log.info(f"[MISSION] Tarama tamamlandı ({len(release_points)} hedef). "
-          f"{config.SCAN_EXIT_DELAY_SEC}s bekleniyor...")
-    await asyncio.sleep(config.SCAN_EXIT_DELAY_SEC)
+    if release_points:
+        log.info(f"[MISSION] Tarama tamamlandı ({len(release_points)} hedef). "
+              f"{config.SCAN_EXIT_DELAY_SEC}s bekleniyor...")
+        await asyncio.sleep(config.SCAN_EXIT_DELAY_SEC)
+    else:
+        # Hedefsiz çıkış (tarama zaman aşımı): beklemenin anlamı yok, uçuş
+        # süresi puanı için doğrudan iniş sekansına geç.
+        log.info("[MISSION] ⚠ Hiç hedef bulunamadı — drop öğesiz misyonla inişe geçiliyor")
 
     await build_and_start_drop_mission(drone, release_points)

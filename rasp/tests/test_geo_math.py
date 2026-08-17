@@ -52,18 +52,26 @@ def test_center_pixel_matches_camera_pitch_geometry():
 
 def test_shallow_angle_pixel_is_rejected():
     """
-    Sığ açıya denk gelen (ufka yakın bakan) piksel — roll/pitch SIFIR
-    olsa bile — MAX_DETECTION_DISTANCE_M üzerine çıkıp reddedilmeli.
-    CAMERA_ROTATION_DEG=180 kuruluysa bu, ham (native) frame'de cy=HEIGHT
-    (gerçek dünyada ufka yakın üst kenara denk gelir); değilse cy=0.
+    Işını gerçekten ufka yaklaştıran kombinasyon (üst kenar pikseli + limit
+    içinde burun-yukarı pitch) MAX_DETECTION_DISTANCE_M reddine takılmalı.
+
+    NOT (2026-08-17): test eskiden pitch=0 ile üst kenarı "sığ" sayıyordu —
+    bu, kalibrasyonsuz geniş FOV (48.8°) varsayımına göre yazılmıştı. Gerçek
+    kalibrasyonla (VFOV ~27.5°) üst kenar 45-14.6≈30° depresyonda kalıyor ve
+    60m irtifada ~102m'ye projekte oluyor — bu GEÇERLİ bir tespittir,
+    reddedilmemesi doğrudur. Sığ açı ancak attitude ile oluşur: pitch=+20°
+    (MAX_PITCH sınırının içinde) üst kenar ışını ~10° depresyona indirir →
+    ~330m > MAX_DETECTION_DISTANCE_M → red. Kalibrasyonsuz yedek FOV yolunda
+    da aynı kombinasyon ufka çıkar (45-24.4-20≈0.6°) → yine red.
     """
     alt = 60.0
     shallow_cy = config.HEIGHT if config.CAMERA_ROTATION_DEG == 180 else 0
-    result = geo.pixel_to_gps(0.0, 0.0, alt, 0.0, 0.0, 0.0,
+    nose_up = config.MAX_PITCH_FOR_DETECTION_DEG - 10.0  # limit İÇİNDE kalır
+    result = geo.pixel_to_gps(0.0, 0.0, alt, 0.0, 0.0, nose_up,
                                config.WIDTH / 2, shallow_cy)
     assert result is None, (
-        "Sığ açı pikseli reddedilmedi — MAX_DETECTION_DISTANCE_M "
-        "kontrolü beklenmedik şekilde geçti"
+        "Sığ açı kombinasyonu (üst kenar + burun-yukarı pitch) reddedilmedi — "
+        "MAX_DETECTION_DISTANCE_M kontrolü beklenmedik şekilde geçti"
     )
 
 
@@ -112,6 +120,37 @@ def test_computed_distance_never_exceeds_configured_max():
                     f"{config.MAX_DETECTION_DISTANCE_M}m"
                 )
     assert checked_any, "Hiçbir kombinasyon kabul edilmedi — test anlamsız kaldı"
+
+
+def test_bearing_deg_cardinal_directions():
+    """bearing_deg (2026-08-17, drop along/cross ayrışımı için eklendi):
+    kuzey=0°, doğu=90°, güney=±180°, batı=-90° civarı dönmeli."""
+    lat, lon = 39.0, 32.0
+    d = 0.001
+    assert abs(geo.bearing_deg(lat, lon, lat + d, lon)) < 0.5, "kuzey ≈ 0° değil"
+    assert abs(geo.bearing_deg(lat, lon, lat, lon + d) - 90.0) < 0.5, "doğu ≈ 90° değil"
+    assert abs(abs(geo.bearing_deg(lat, lon, lat - d, lon)) - 180.0) < 0.5, "güney ≈ ±180° değil"
+    assert abs(geo.bearing_deg(lat, lon, lat, lon - d) + 90.0) < 0.5, "batı ≈ -90° değil"
+
+
+def test_wrap180_folds_into_range():
+    assert geo.wrap180(190.0) == -170.0
+    assert geo.wrap180(-190.0) == 170.0
+    assert geo.wrap180(0.0) == 0.0
+    assert geo.wrap180(180.0) == -180.0  # aralık [-180, 180): 180 → -180 (eşdeğer)
+    assert geo.wrap180(540.0) == -180.0
+
+
+def test_drop_point_is_upcourse_of_target():
+    """Release noktası, hedefin rota yönünün GERİSİNDE olmalı (yük ileri
+    savrulur) ve geri ofset hız*düşüş süresi kadar olmalı."""
+    alt, speed, course = 60.0, 10.0, 0.0   # kuzeye uçuş
+    tlat, tlon = 39.0, 32.0
+    rlat, rlon = geo.calculate_drop_point(tlat, tlon, alt, speed, course)
+    assert rlat < tlat, "release noktası hedefin kuzeyinde (ilerisinde) çıktı"
+    expected = speed * math.sqrt(2 * alt / 9.81)
+    got = geo.haversine(tlat, tlon, rlat, rlon)
+    assert abs(got - expected) < 0.5, f"geri ofset {got:.2f}m != beklenen {expected:.2f}m"
 
 
 if __name__ == "__main__":

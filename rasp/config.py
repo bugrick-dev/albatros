@@ -119,8 +119,9 @@ WFB_FEC_N          = 12     # 3x FEC yedekliliği — sahada ölçülüp doğrul
 WFB_TXPOWER_MBM    = 3000
 
 # --- Port numaraları ---
-RPICAM_TCP_PORT = 8888
-FFMPEG_UDP_PORT = 9000
+# (RPICAM_TCP_PORT/FFMPEG_UDP_PORT kaldırıldı — TCP+decode pipeline'ı ile
+# birlikte öldüler, bkz. pipeline.py raw stdout notu. NOT: pigpiod hâlâ
+# 8779 portunda kalmalı, 8888'e geri alınmamalı — bkz. tests/legacy/.)
 WFB_UDP_PORT    = 5600
 
 # --- Uçuş bilgisayarı ---
@@ -208,6 +209,7 @@ DETECTION_TRACK_MAX_SEC  = 4.0
 # --- Kamera kalibrasyonu (cihaza özel, git'e girmez — bkz. tools/camera_calibrate.py) ---
 CAMERA_CALIB_PATH = Path(__file__).parent / "camera_calib.json"
 CAMERA_CALIBRATED = False
+CAMERA_CALIB_ERROR = None   # dosya var ama okunamadıysa hata metni (main.py loglar)
 CAMERA_FX = CAMERA_FY = CAMERA_CX = CAMERA_CY = None
 CAMERA_DIST_COEFFS = None
 if CAMERA_CALIB_PATH.is_file():
@@ -219,14 +221,43 @@ if CAMERA_CALIB_PATH.is_file():
         CAMERA_CY          = _calib["cy"]
         CAMERA_DIST_COEFFS = _calib["dist_coeffs"]
         CAMERA_CALIBRATED  = True
-    except Exception:
-        pass  # bozuk/eksik dosya — FOV tabanlı yedek hesaba düş
+    except Exception as e:
+        # Bozuk/eksik dosya — FOV tabanlı yedek hesaba düşülür. Bu SESSİZCE
+        # olmamalı: yanlış FOV ile piksel açıları ~1.7x hatalı çıkıp GPS
+        # işaretlerini onlarca-yüzlerce metre saptırabilir (2026-08-17,
+        # "belirsiz yönlerde sapma" analizi) — main.py açılışta bunu loglar.
+        CAMERA_CALIB_ERROR = repr(e)
 
 # --- Uçuş parametreleri ---
 DRONE_SPEED_MS             = 15.0
+# DROP_TRIGGER_RADIUS_M artık "tetik" değil "KURMA (arming)" yarıçapı: bu
+# mesafeye girilince canlı drop değerlendirmesi başlar. Fiili bırakma kararı
+# along/cross-track ayrışımıyla verilir (bkz. mission.drop_trigger_task,
+# 2026-08-17): eskiden 40m'ye girildiği AN bırakılıyordu — bu, yükün release
+# noktasından 40m öteye (şartnamedeki 20m ölçüm sınırının 2 katı!) atılmasına
+# ve rota başka bacaktayken (ör. öteki hedefe giderken) yanlış tetiklemeye
+# izin veriyordu.
 DROP_TRIGGER_RADIUS_M      = 40
+# Bırakma anı: release noktasına along-track kalan süre bu değerin altına
+# inince tetiklenir (pozisyon akışı ~2-5Hz → tik başına ~0.2-0.5s; bir tik
+# sonrasında noktayı geçmiş olmamak için akış periyodundan biraz büyük seçildi).
+DROP_ALONG_TRIGGER_S       = 0.35
+# Release noktasına dik (cross-track) sapma bu değerden büyükse BIRAKMA —
+# şartname isabet ölçümünü hedef merkezinden 20m ile sınırlıyor (dışı 0 puan);
+# 15m cross-track + balistik/rüzgar hatası ~20m bütçesinin içinde kalma çabası.
+DROP_MAX_CROSS_TRACK_M     = 15.0
 SCAN_EXIT_DELAY_SEC        = 15
 SINGLE_TARGET_TIMEOUT_SEC  = 30
+# Tespit aktif olduktan (DETECTION_ACTIVE_WP) sonra HİÇ hedef bulunamazsa
+# arama döngüsü DO_JUMP nedeniyle sonsuza dek dönerdi — şartnamede Görev 2
+# uçuş süresi azami 10 dakika, aşımı görevi geçersiz kılıyor (2026-08-17).
+# Bu süre dolunca eldeki hedeflerle (0 dahil) iniş sekansına geçilir.
+SEARCH_TOTAL_TIMEOUT_SEC   = 300
+# nearest_telemetry_at eşleşmesi bu yaştan eskiyse tespit örneği REDDEDİLİR
+# (eskiden yalnızca log uyarısı vardı, hesap yine de yapılıyordu) — bayat
+# attitude/pozisyon ile projeksiyon "belirsiz yönlerde" büyük sapmaların ana
+# kaynaklarından (2026-08-17, 277m sapma analizi).
+TELEMETRY_MATCH_MAX_AGE_S  = 0.25
 FC_CONNECT_TIMEOUT_SEC     = 10   # FC bağlantısı kurulamazsa video-only moda geç
 FC_RECONNECT_INTERVAL_SEC  = 3    # Bağlantı koptuğunda (ör. kalibrasyon sonrası FC reboot)
                                    # yeniden deneme aralığı — bkz. mission.fc_connection_task
@@ -256,6 +287,7 @@ PWM_MAVI_NEUTRAL    = 1600   # mavi servo (AUX2) — kapalı/nötr
 CMD_NAV_WAYPOINT     = 16
 CMD_NAV_LOITER_TURNS = 18
 CMD_CONDITION_DIST   = 114
+CMD_DO_JUMP          = 177
 CMD_DO_CHANGE_SPEED  = 178
 CMD_DO_SET_SERVO     = 183
 CMD_RTL              = 20

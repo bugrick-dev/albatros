@@ -12,6 +12,7 @@ import numpy as np
 import config
 import state
 import geo
+import pipeline
 
 log = logging.getLogger("vision")
 
@@ -158,7 +159,20 @@ def _update_detection(mask, color_key, queue, queued_colors, tel, tracking):
         cx, cy, cnt = result
         state.detected_targets[color_key] = {"cx": cx, "cy": cy, "contour": cnt}
 
-        if state.detection_active.is_set() and not locked and None not in tel.values():
+        # Bayat telemetri reddi (2026-08-17, "277m belirsiz yönde sapma" analizi):
+        # frame anına en yakın telemetri örneği bile TELEMETRY_MATCH_MAX_AGE_S'den
+        # eskiyse bu kareden GPS HESABI YAPILMAZ — eskiden yalnızca uyarı
+        # loglanıp hesap yine de yapılıyordu; dönüş sırasında yüz ms'lerce eski
+        # yaw/roll ile projeksiyon, işareti keyfi yönde onlarca-yüzlerce metre
+        # kaydırabiliyor. EKF reddi de aynı mantık: FC "global konumum sağlıklı
+        # değil" diyorsa (is False; None=henüz veri yok, engelleme) o anki
+        # drone konumu güvenilmez, tespit örneği alınmaz.
+        tel_fresh = max(tel.get("pos_age_s") or 0.0,
+                        tel.get("att_age_s") or 0.0) <= config.TELEMETRY_MATCH_MAX_AGE_S
+        ekf_ok = state.ekf_health["global_position_ok"] is not False
+
+        if (state.detection_active.is_set() and not locked
+                and None not in tel.values() and tel_fresh and ekf_ok):
             geo_result = geo.pixel_to_gps(
                 tel["lat"], tel["lon"], tel["alt"], tel["yaw"],
                 tel["roll"], tel["pitch"], cx, cy,
@@ -209,70 +223,138 @@ def opencv_processing_thread(queue):
     # süreci komple kaldırıldı, bkz. pipeline.py rpicam_cmd — artık --codec
     # yuv420 -o - ile raw I420 doğrudan bu sürecin stdout'undan okunuyor).
 
-    # --- FFmpeg encode: raw BGR → H264 (yazilimsal) ---
+    # --- FFmpeg encode + GStreamer zinciri ---
     # Pi 5'te bcm2835-codec gibi ayri bir H264 donanim encode blogu yok (video19
     # sadece HEVC decode) - h264_v4l2m2m "Could not find a valid device" hatasi
     # veriyordu (2026-07-26 sahada bulunup dogrulandi). libx264 yerine kullanildi.
-    ffmpeg_encode_cmd = [
-        "ffmpeg",
-        "-f", "rawvideo", "-pix_fmt", "bgr24",
-        "-s", f"{config.WIDTH}x{config.HEIGHT}",
-        "-r", str(config.FPS),
-        "-i", "-",
-        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-        "-b:v", "2000k", "-g", "15",
-        "-flush_packets", "1",
-        "-f", "h264", "-",
-    ]
-    log.info(f"[VISION] FFmpeg encode başlatılıyor: {' '.join(ffmpeg_encode_cmd)}")
-    ffmpeg_encode_stderr = open("/home/albatros/logs/ffmpeg_encode.log", "wb")
-    state.ffmpeg_encode_process = subprocess.Popen(
-        ffmpeg_encode_cmd,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=ffmpeg_encode_stderr
-    )
-    log.info(f"[VISION] FFmpeg encode başladı → PID={state.ffmpeg_encode_process.pid} (libx264)")
+    #
+    # Bitrate/GOP artık config'ten (2026-08-17): eskiden -b:v 2000k hardcode'du,
+    # config.BITRATE (WFB FEC bütçesine göre 1M'e düşürülen değer) fiilen
+    # KULLANILMIYORDU — MCS0/20MHz/longGI hava hızı ~6.5Mbps x FEC 4/12 ≈
+    # ~2.1Mbps kullanılabilir bant; 2000k video + RTP/FEC yükü bunu aşıp menzil
+    # sınırında paket kaybı/donma üretiyordu. maxrate/bufsize de eklendi ki
+    # libx264 anlık patlamaları (sahne değişimi) bandın üstüne taşırmasın.
+    def _start_encode_chain():
+        ffmpeg_encode_cmd = [
+            "ffmpeg",
+            "-f", "rawvideo", "-pix_fmt", "bgr24",
+            "-s", f"{config.WIDTH}x{config.HEIGHT}",
+            "-r", str(config.FPS),
+            "-i", "-",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-b:v", str(config.BITRATE), "-maxrate", str(config.BITRATE),
+            "-bufsize", str(config.BITRATE // 2), "-g", str(config.INTRA),
+            "-flush_packets", "1",
+            "-f", "h264", "-",
+        ]
+        log.info(f"[VISION] FFmpeg encode başlatılıyor: {' '.join(ffmpeg_encode_cmd)}")
+        ffmpeg_encode_stderr = open("/home/albatros/logs/ffmpeg_encode.log", "ab")
+        state.ffmpeg_encode_process = subprocess.Popen(
+            ffmpeg_encode_cmd,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=ffmpeg_encode_stderr
+        )
+        log.info(f"[VISION] FFmpeg encode başladı → PID={state.ffmpeg_encode_process.pid} (libx264)")
 
-    # Encode yazımını ayrı thread'de yap — encoder meşgulse frame düş, OpenCV'yi bloklama
+        def _gst_pump(ffmpeg_proc):
+            gst_cmd = [
+                "gst-launch-1.0", "fdsrc", "!",
+                "h264parse", "!",
+                "rtph264pay", "config-interval=1", "pt=96", "!",
+                "udpsink", "host=127.0.0.1", f"port={config.WFB_UDP_PORT}",
+            ]
+            log.info(f"[VISION] GStreamer başlatılıyor: {' '.join(gst_cmd)}")
+            state.gst_process = subprocess.Popen(
+                gst_cmd, stdin=ffmpeg_proc.stdout,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+            )
+            log.info(f"[VISION] GStreamer başladı → PID={state.gst_process.pid}")
+            for line in state.gst_process.stdout:
+                log.info(f"[GST] {line.rstrip()}")
+                if "New clock" in line:
+                    log.info("[VISION] ✓ Video/WFB pipeline PLAYING — aktarım fiilen başladı")
+            state.gst_process.wait()
+            log.info(f"[VISION] GStreamer süreci sonlandı (PID={state.gst_process.pid})")
+
+        threading.Thread(target=_gst_pump, args=(state.ffmpeg_encode_process,),
+                         daemon=True).start()
+
+    _start_encode_chain()
+
+    # Encode yazımını ayrı thread'de yap — encoder meşgulse frame düş, OpenCV'yi
+    # bloklama. Encoder ÖLÜRSE (2026-08-17): eskiden exception sessizce yutuluyor,
+    # yayın (hakeme anlık kanıt — şartname zorunluluğu!) fark edilmeden ölü
+    # kalıyordu. Artık loglanır ve 5 sn'lik geri çekilmeyle zincir yeniden kurulur.
     _encode_queue = _queue.Queue(maxsize=2)
 
     def _encode_writer():
-        while True:
+        last_restart = 0.0
+        while not state.shutdown_requested.is_set():
             frame_bytes = _encode_queue.get()
             if frame_bytes is None:
                 break
             try:
                 state.ffmpeg_encode_process.stdin.write(frame_bytes)
-            except Exception:
-                pass
+            except Exception as e:
+                proc = state.ffmpeg_encode_process
+                dead = proc is None or proc.poll() is not None
+                now_m = time.monotonic()
+                if dead and now_m - last_restart > 5.0:
+                    log.info(f"[VISION] ⚠ FFmpeg encode ÖLDÜ ({e}) — zincir yeniden kuruluyor")
+                    last_restart = now_m
+                    try:
+                        _start_encode_chain()
+                    except Exception as e2:
+                        log.info(f"[VISION] Encode zinciri yeniden kurulamadı: {e2}")
 
     threading.Thread(target=_encode_writer, daemon=True).start()
-
-    # --- GStreamer: H264 → RTP → UDP → WFB-ng ---
-    def ffmpeg_to_gstreamer():
-        gst_cmd = [
-            "gst-launch-1.0", "fdsrc", "!",
-            "h264parse", "!",
-            "rtph264pay", "config-interval=1", "pt=96", "!",
-            "udpsink", "host=127.0.0.1", f"port={config.WFB_UDP_PORT}",
-        ]
-        log.info(f"[VISION] GStreamer başlatılıyor: {' '.join(gst_cmd)}")
-        state.gst_process = subprocess.Popen(
-            gst_cmd, stdin=state.ffmpeg_encode_process.stdout,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-        )
-        log.info(f"[VISION] GStreamer başladı → PID={state.gst_process.pid}")
-        for line in state.gst_process.stdout:
-            log.info(f"[GST] {line.rstrip()}")
-            if "New clock" in line:
-                log.info("[VISION] ✓ Video/WFB pipeline PLAYING — aktarım fiilen başladı")
-        state.gst_process.wait()
-        log.info(f"[VISION] GStreamer süreci sonlandı (PID={state.gst_process.pid})")
-
-    threading.Thread(target=ffmpeg_to_gstreamer, daemon=True).start()
 
     # Raw YUV420 (I420 planar): width*height*1.5 byte/kare — eski BGR decode
     # çıktısının (width*height*3) yarısı, ayrıca kaynakta bir codec turu eksik.
     frame_size    = config.WIDTH * config.HEIGHT * 3 // 2
+
+    # --- Taze-kare okuyucu thread (2026-08-17, "277m sapma" analizi) ---
+    # ESKİDEN işleme döngüsü pipe'tan doğrudan okuyordu: OpenCV 30fps'e
+    # yetişemediği an pipe dolar, rpicam bloklanır ve işlenen kare fiilen
+    # SANİYELER önce çekilmiş olabilirdi — ama frame_time "şimdi" kabul
+    # edildiği için telemetri eşleşmesi (nearest_telemetry_at) dönüş/manevra
+    # sırasında tamamen yanlış yaw/roll seçip GPS işaretini keyfi yönde
+    # yüzlerce metre kaydırabiliyordu. Artık bu thread pipe'ı SÜREKLİ boşaltır
+    # (backpressure yok), işleme döngüsü her turda yalnızca EN SON kareyi alır
+    # (aradakiler bilinçli düşürülür) ve frame_time gerçek okuma anına yakındır.
+    # rpicam ÖLÜRSE (EOF): eskiden sonsuz "Eksik frame: 0/..." busy-loop'una
+    # giriliyordu; artık loglanıp pipeline.restart_rpicam() ile süreç yeniden
+    # başlatılır.
+    _latest_frame = {"buf": None, "ts": 0.0, "seq": 0}
+    _frame_cond   = threading.Condition()
+
+    def _frame_reader():
+        while not state.shutdown_requested.is_set():
+            proc = state.rpicam_process
+            if proc is None or proc.stdout is None:
+                time.sleep(0.2)
+                continue
+            try:
+                buf = proc.stdout.read(frame_size)
+            except Exception as e:
+                log.info(f"[VISION] Frame okuma hatası: {e}")
+                buf = b""
+            ts = time.monotonic()
+            if buf is None or len(buf) != frame_size:
+                if state.shutdown_requested.is_set():
+                    return
+                log.info(f"[VISION] ⚠ rpicam akışı kesildi "
+                         f"({0 if not buf else len(buf)}/{frame_size} byte) — yeniden başlatılıyor")
+                pipeline.restart_rpicam()
+                time.sleep(1.0)
+                continue
+            with _frame_cond:
+                _latest_frame["buf"] = buf
+                _latest_frame["ts"]  = ts
+                _latest_frame["seq"] += 1
+                _frame_cond.notify_all()
+
+    threading.Thread(target=_frame_reader, daemon=True).start()
+    _last_seq = 0
     gps_data      = {}      # {color: (lat, lon)} — HUD için tracking'teki en-iyi örneği yansıtır
     queued_colors = set()   # her renk yalnızca bir kez kuyruğa girer (kilitlendi)
     tracking      = {"mavi": None, "kirmizi": None}  # {color: {"lat","lon","alt","dist","worse_streak","miss_streak","first_seen"} | None}
@@ -306,20 +388,21 @@ def opencv_processing_thread(queue):
 
     last_staleness_warn = 0.0
 
-    while True:
+    while not state.shutdown_requested.is_set():
         try:
-            raw_frame = state.rpicam_process.stdout.read(frame_size)
-            # Frame'in bu sürece ULAŞTIĞI an — gerçek sensör yakalama anından hâlâ
-            # biraz geride (rpicam-vid'in kendi ISP/pipe gecikmesi kadar), ama artık
-            # H264 encode+decode turu olmadığı için eskisinden çok daha yakın.
-            # Aşağıdaki telemetri eşlemesi bu ana göre yapılıyor (bkz. state.py
-            # nearest_telemetry_at, 2026-08-16 — Öncelik 3 zaman senkronizasyonu).
-            frame_time = time.monotonic()
-
-            if len(raw_frame) != frame_size:
-                log.info(f"[VISION] Eksik frame: {len(raw_frame)}/{frame_size} byte — atlanıyor")
-                time.sleep(0.01)
-                continue
+            # En son kareyi bekle/al — okuyucu thread pipe'ı sürekli boşaltıyor,
+            # burada yalnızca en taze kare işlenir (geride kalanlar düşürülür).
+            # frame_time = karenin pipe'tan OKUNDUĞU an (sensör anına, ISP/pipe
+            # gecikmesi hariç, pratikte en yakın ölçülebilir an) — telemetri
+            # eşlemesi bu ana göre (bkz. state.nearest_telemetry_at).
+            with _frame_cond:
+                if _latest_frame["seq"] == _last_seq:
+                    _frame_cond.wait(timeout=0.5)
+                if _latest_frame["seq"] == _last_seq:
+                    continue  # hâlâ yeni kare yok (rpicam restart olabilir)
+                raw_frame  = _latest_frame["buf"]
+                frame_time = _latest_frame["ts"]
+                _last_seq  = _latest_frame["seq"]
 
             # I420 (YUV420 planar) → BGR. rpicam-vid --codec yuv420 çıktısı bu
             # düzende: Y düzlemi (H×W) + U/V düzlemleri (H/2×W/2 her biri),
@@ -406,7 +489,7 @@ def opencv_processing_thread(queue):
             cv2.putText(stream_frame, f"FPS: {current_fps}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-            if tel["alt"]:
+            if tel["alt"] is not None:
                 cv2.putText(stream_frame, f"ALT: {tel['alt']:.1f}m", (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 

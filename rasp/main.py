@@ -38,6 +38,10 @@ async def run():
     log.info(f"  Video   : {config.WIDTH}x{config.HEIGHT} @ {config.FPS}fps")
     if config.CAMERA_CALIBRATED:
         log.info(f"  Kamera  : kalibreli (fx={config.CAMERA_FX:.1f} fy={config.CAMERA_FY:.1f}) ✓")
+    elif config.CAMERA_CALIB_ERROR:
+        log.info(f"  Kamera  : ‼ KALİBRASYON DOSYASI BOZUK ({config.CAMERA_CALIB_ERROR}) — "
+                  f"FOV tahminine düşüldü, GPS hesabı BÜYÜK hata verir! "
+                  f"camera_calib.json onarılmadan UÇMAYIN")
     else:
         log.info(f"  Kamera  : ⚠ KALİBRASYON YOK — FOV tahmini ({config.CAMERA_FOV_H}°/{config.CAMERA_FOV_V}°) kullanılıyor, "
                   f"GPS hesabı hatalı olabilir! bkz. tools/camera_calibrate.py")
@@ -45,7 +49,9 @@ async def run():
     log.info(f"  WFB     : MAC={config.WFB_MAC}  kanal={config.WFB_CHANNEL}")
     log.info(f"  Tarama  : WP {config.SEARCH_START_WP} → {config.SEARCH_SPEED_MS}m/s | "
           f"loop çıkış WP={config.SEARCH_LOOP_EXIT_WP}")
-    log.info(f"  Drop    : tetik={config.DROP_TRIGGER_RADIUS_M}m (FC servo)")
+    log.info(f"  Drop    : kurma={config.DROP_TRIGGER_RADIUS_M}m "
+             f"cross-max={config.DROP_MAX_CROSS_TRACK_M}m t-tetik={config.DROP_ALONG_TRIGGER_S}s (FC servo)")
+    log.info(f"  Tarama zaman aşımı : {config.SEARCH_TOTAL_TIMEOUT_SEC}s (hedefsiz kalınırsa inişe geç)")
     log.info(f"  Tespit  : WP {config.DETECTION_ACTIVE_WP}'de aktif")
     log.info("=" * 60)
 

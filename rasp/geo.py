@@ -25,6 +25,28 @@ def _rz(psi):
     return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 
 
+# NOT (2026-08-17): Bu modüldeki TÜM adım logları log.debug'a indirildi.
+# pixel_to_gps tespit sürerken kare başına (30fps x 2 renk) 4-6 satır INFO
+# basıyordu — konsol+dosya handler'larıyla görüntü işleme thread'ini
+# yavaşlatıp frame backpressure'a (bayat kare → yanlış telemetri eşleşmesi
+# → GPS sapması) katkı veriyor ve SD kartı dolduruyordu (vision.log 16MB).
+# Kilit/karar olayları vision.py ve mission.py'de INFO olarak loglanmaya
+# devam ediyor; ham projeksiyon adımları gerekirse logger seviyesi DEBUG'a
+# çekilerek görülebilir.
+
+
+def wrap180(deg):
+    """Açıyı [-180, 180) aralığına katlar (180 girişi -180 döner — eşdeğer açı)."""
+    return (deg + 180.0) % 360.0 - 180.0
+
+
+def bearing_deg(lat1, lon1, lat2, lon2):
+    """1. noktadan 2. noktaya düz-dünya (küçük mesafe) kerterizi, derece (0=kuzey)."""
+    dn = (lat2 - lat1) * 111320.0
+    de = (lon2 - lon1) * 111320.0 * math.cos(math.radians(lat1))
+    return math.degrees(math.atan2(de, dn))
+
+
 def haversine(lat1, lon1, lat2, lon2):
     """İki GPS noktası arasındaki yüzey mesafesini metre cinsinden döner."""
     R    = 6371000
@@ -56,17 +78,17 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     (2026-08-12 masa/Gazebo testinde ~150-160m'lik "saçma" sapmalar bulundu,
     bkz. config.py MAX_DETECTION_DISTANCE_M notu).
     """
-    log.info(f"[GEO][pixel_to_gps] Giriş: drone=({drone_lat:.6f},{drone_lon:.6f}) "
+    log.debug(f"[GEO][pixel_to_gps] Giriş: drone=({drone_lat:.6f},{drone_lon:.6f}) "
           f"alt={alt:.1f}m yaw={yaw_deg:.1f}° roll={roll_deg:.1f}° pitch={pitch_deg:.1f}° "
           f"piksel=({target_cx},{target_cy})")
 
     if abs(roll_deg) > config.MAX_ROLL_FOR_DETECTION_DEG:
-        log.info(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: |roll|={abs(roll_deg):.1f}° > "
+        log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: |roll|={abs(roll_deg):.1f}° > "
                  f"MAX_ROLL_FOR_DETECTION_DEG={config.MAX_ROLL_FOR_DETECTION_DEG}° — tespit atlanıyor")
         return None
 
     if abs(pitch_deg) > config.MAX_PITCH_FOR_DETECTION_DEG:
-        log.info(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: |pitch|={abs(pitch_deg):.1f}° > "
+        log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: |pitch|={abs(pitch_deg):.1f}° > "
                  f"MAX_PITCH_FOR_DETECTION_DEG={config.MAX_PITCH_FOR_DETECTION_DEG}° — tespit atlanıyor")
         return None
 
@@ -100,7 +122,7 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
         offset_angle_x = -offset_angle_x
         offset_angle_y = -offset_angle_y
 
-    log.info(f"[GEO][pixel_to_gps] Açısal ofset: ax={math.degrees(offset_angle_x):.3f}° "
+    log.debug(f"[GEO][pixel_to_gps] Açısal ofset: ax={math.degrees(offset_angle_x):.3f}° "
           f"ay={math.degrees(offset_angle_y):.3f}° (kalibreli={config.CAMERA_CALIBRATED}, "
           f"kamera_rotasyon={config.CAMERA_ROTATION_DEG}°)")
 
@@ -125,25 +147,25 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     ray_world = _rz(math.radians(yaw_deg)) @ _ry(math.radians(pitch_deg)) @ _rx(math.radians(roll_deg)) @ ray_body
 
     if ray_world[2] <= 0.05:
-        log.info(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: ışın ufka çok yakın/üstünde "
+        log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: ışın ufka çok yakın/üstünde "
                  f"(dünya-aşağı bileşeni={ray_world[2]:.3f}) — dejenere projeksiyon")
         return None
 
     t = alt / ray_world[2]
     delta_north = t * ray_world[0]
     delta_east  = t * ray_world[1]
-    log.info(f"[GEO][pixel_to_gps] Dünya koordinatları: kuzey={delta_north:.2f}m doğu={delta_east:.2f}m")
+    log.debug(f"[GEO][pixel_to_gps] Dünya koordinatları: kuzey={delta_north:.2f}m doğu={delta_east:.2f}m")
 
     horizontal_dist = math.hypot(delta_north, delta_east)
     if horizontal_dist > config.MAX_DETECTION_DISTANCE_M:
-        log.info(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: mesafe={horizontal_dist:.1f}m > "
+        log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: mesafe={horizontal_dist:.1f}m > "
                  f"MAX_DETECTION_DISTANCE_M={config.MAX_DETECTION_DISTANCE_M}m — sığ açı/dejenere "
                  f"projeksiyon şüphesi, tespit atlanıyor")
         return None
 
     target_lat = drone_lat + (delta_north / 111320)
     target_lon = drone_lon + (delta_east  / (111320 * math.cos(math.radians(drone_lat))))
-    log.info(f"[GEO][pixel_to_gps] Sonuç: hedef GPS=({target_lat:.6f}, {target_lon:.6f})")
+    log.debug(f"[GEO][pixel_to_gps] Sonuç: hedef GPS=({target_lat:.6f}, {target_lon:.6f})")
 
     return target_lat, target_lon
 
@@ -153,23 +175,23 @@ def calculate_drop_point(target_lat, target_lon, alt, speed_ms, yaw_deg):
     Balistik hesap: hedefe isabet etmek için yükün bırakılması gereken
     GPS noktasını (release point) döner.
     """
-    log.info(f"[GEO][calculate_drop_point] Hedef: ({target_lat:.6f},{target_lon:.6f}) "
+    log.debug(f"[GEO][calculate_drop_point] Hedef: ({target_lat:.6f},{target_lon:.6f}) "
           f"alt={alt:.1f}m hız={speed_ms:.1f}m/s yaw={yaw_deg:.1f}°")
 
     g                = 9.81
     alt              = max(alt, 1.0)   # yerde test: alt=0 sqrt hatası önle
     fall_time        = math.sqrt(2 * alt / g)
     horizontal_dist  = speed_ms * fall_time
-    log.info(f"[GEO][calculate_drop_point] Düşüş süresi={fall_time:.3f}s | "
+    log.debug(f"[GEO][calculate_drop_point] Düşüş süresi={fall_time:.3f}s | "
           f"yatay kayma={horizontal_dist:.2f}m")
 
     yaw_rad      = math.radians(yaw_deg)
     delta_north  = -horizontal_dist * math.cos(yaw_rad)
     delta_east   = -horizontal_dist * math.sin(yaw_rad)
-    log.info(f"[GEO][calculate_drop_point] Geri ofset: kuzey={delta_north:.2f}m doğu={delta_east:.2f}m")
+    log.debug(f"[GEO][calculate_drop_point] Geri ofset: kuzey={delta_north:.2f}m doğu={delta_east:.2f}m")
 
     release_lat = target_lat + (delta_north / 111320)
     release_lon = target_lon + (delta_east  / (111320 * math.cos(math.radians(target_lat))))
-    log.info(f"[GEO][calculate_drop_point] Release point: ({release_lat:.6f}, {release_lon:.6f})")
+    log.debug(f"[GEO][calculate_drop_point] Release point: ({release_lat:.6f}, {release_lon:.6f})")
 
     return release_lat, release_lon

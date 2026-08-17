@@ -15,7 +15,11 @@ target_queue = Queue()
 
 # --- Telemetri ---
 telemetry_lock    = threading.Lock()
-current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None, "roll": None, "pitch": None, "speed": None}
+# vel_n/vel_e: NED yer hızı bileşenleri — drop_trigger_task'ın gerçek yer izi
+# rotasını (course) hesaplaması için (yaw değil: sabit kanat rüzgarda crab
+# yapar, yük burnun değil hız vektörünün yönünde savrulur — 2026-08-17).
+current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None, "roll": None, "pitch": None,
+                     "speed": None, "vel_n": None, "vel_e": None}
 
 # --- Zaman damgalı telemetri geçmişi (pixel_to_gps için "en yakın örnek" eşlemesi) ---
 # position_task ve attitude_task FARKLI MAVSDK akışları, farklı hızlarda güncelleniyor
@@ -44,8 +48,10 @@ def nearest_telemetry_at(ts):
     farklı hızlarda akıyor, ikisini karıştırmadan en-yakın eşleme yapılmalı).
     Henüz hiç veri gelmemişse None döner — çağıran taraf eski current_telemetry
     davranışına (None kontrolü) geri düşebilir.
-    pos_age_s/att_age_s: eşleşen örneğin gerçek yaşı (saniye) — sahada gecikme
-    büyüklüğünü loglayıp görebilmek için (bkz. vision.py).
+    pos_age_s/att_age_s: eşleşen örneğin frame anına MUTLAK zaman uzaklığı
+    (saniye) — hem loglama hem de TELEMETRY_MATCH_MAX_AGE_S reddi için
+    (bkz. vision.py). abs() şart: eşleşen örnek frame'den SONRA da gelmiş
+    olabilir, işaretli fark max() içinde yanlış küçük görünürdü (2026-08-17).
     """
     if not position_history or not attitude_history:
         return None
@@ -54,8 +60,8 @@ def nearest_telemetry_at(ts):
     return {
         "lat": pos[1], "lon": pos[2], "alt": pos[3],
         "yaw": att[1], "roll": att[2], "pitch": att[3],
-        "pos_age_s": ts - pos[0],
-        "att_age_s": ts - att[0],
+        "pos_age_s": abs(ts - pos[0]),
+        "att_age_s": abs(ts - att[0]),
     }
 
 # --- FC bağlantı durumu (HUD icin) ---
@@ -74,10 +80,10 @@ detection_active = threading.Event()
 current_wp       = {"index": None, "total": None}
 
 # --- Alt süreç tutamaçları ---
+# (ffmpeg_decode_process kaldırıldı — decode aşaması 2026-08-16'da öldü)
 wfb_process           = None
 rpicam_process        = None
 gst_process           = None
-ffmpeg_decode_process = None
 ffmpeg_encode_process = None
 
 # --- Kapanis sinyali (thread'lerin duzgun sonlanmasi icin) ---
