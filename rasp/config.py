@@ -296,9 +296,13 @@ SEARCH_START_WP     = 4      # Bu WP'ye gelince tarama hızına geç (GCS planı
 DETECTION_ACTIVE_WP = 4      # Bu WP'ye gelince tespit aktif olur (GCS planına göre ayarla)
 SEARCH_SPEED_MS     = 10.0   # Tarama hızı (m/s)
 DROP_SPEED_MS       = 10.0   # Yük bırakmadan önce hız (m/s)
-SEARCH_LOOP_EXIT_WP = 7      # DO_JUMP'tan SONRAKİ WP index. Hedefler bulunduktan sonra bu index'ten
-                              # itibaren olan öğeler "iniş sekansı" sayılır ve yeni drop misyonuna
-                              # olduğu gibi eklenir (bkz. mission.build_and_start_drop_mission)
+SEARCH_LOOP_EXIT_WP = 12     # Bu index'ten itibaren olan öğeler "iniş sekansı" sayılır ve yeni drop
+                              # misyonuna olduğu gibi eklenir (bkz. mission.build_and_start_drop_mission).
+                              # 2026-08-19: GCS planı artık DO_JUMP KULLANMIYOR (tarama döngüsü farklı
+                              # şekilde kuruldu) — mission.py'deki DO_JUMP koruması (iniş sekansında
+                              # kaçak bir DO_JUMP bulunursa öğeyi atıp yüksek sesle loglar) yine de
+                              # SAFETY NET olarak kod tarafında duruyor, plan yanlışlıkla eski haline
+                              # dönerse sessiz felaketi önler.
 
 # --- FC Servo (tek yol — GPIO servo kaldırıldı, 2026-08-16) ---
 SERVO_KIRMIZI_FC_NO = 9      # FC servo kanalı — kırmızı yük (AUX1)
