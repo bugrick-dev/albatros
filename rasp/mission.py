@@ -549,9 +549,14 @@ async def mission_task(drone, queue):
 
     while len(release_points) < 2:
         # Genel tarama zaman aşımı (2026-08-17): tespit aktifleştikten sonra
-        # sayaç başlar. HİÇ hedef bulunamazsa arama döngüsü (DO_JUMP) sonsuza
-        # dek dönerdi — şartnamede Görev 2 azami 10 dk, aşımı uçuşu geçersiz
-        # kılıyor. Süre dolunca eldeki hedeflerle (0 dahil) iniş sekansına geçilir.
+        # sayaç başlar. HİÇ hedef bulunamazsa mission_task (kod tarafı) süresiz
+        # beklerdi — şartnamede Görev 2 azami 10 dk, aşımı uçuşu geçersiz
+        # kılıyor. Süre dolunca eldeki hedeflerle (0 dahil) iniş sekansına
+        # geçilir. NOT (2026-08-19): GCS planı artık DO_JUMP kullanmıyor
+        # (tarama bacağı WP4→SEARCH_LOOP_EXIT_WP arası sonlu düz bir dizi),
+        # ama bu zaman aşımı hâlâ gerekli — FC'nin kendi ilerleyişi hiçbir
+        # zaman build_and_start_drop_mission'ı tetiklemez, bu satır olmadan
+        # kod tarafı hedef bulunamasa bile sonsuza dek beklerdi.
         now_m = time.monotonic()
         if search_deadline is None and state.detection_active.is_set():
             search_deadline = now_m + config.SEARCH_TOTAL_TIMEOUT_SEC

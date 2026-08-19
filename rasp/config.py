@@ -278,9 +278,21 @@ DROP_MAX_CROSS_TRACK_M     = 15.0
 SCAN_EXIT_DELAY_SEC        = 15
 SINGLE_TARGET_TIMEOUT_SEC  = 30
 # Tespit aktif olduktan (DETECTION_ACTIVE_WP) sonra HİÇ hedef bulunamazsa
-# arama döngüsü DO_JUMP nedeniyle sonsuza dek dönerdi — şartnamede Görev 2
+# mission_task (kod tarafı) hedef beklemeye devam eder — şartnamede Görev 2
 # uçuş süresi azami 10 dakika, aşımı görevi geçersiz kılıyor (2026-08-17).
-# Bu süre dolunca eldeki hedeflerle (0 dahil) iniş sekansına geçilir.
+# Bu süre dolunca eldeki hedeflerle (0 dahil) build_and_start_drop_mission
+# çağrılıp iniş sekansına geçilir.
+#
+# NOT (2026-08-19): eskiden bu satırın gerekçesi "arama döngüsü DO_JUMP
+# nedeniyle sonsuza dek dönerdi" idi — GCS planı artık DO_JUMP KULLANMIYOR,
+# tarama bacağı WP4→SEARCH_LOOP_EXIT_WP arası düz/sonlu bir WP dizisi (bkz.
+# SEARCH_LOOP_EXIT_WP notu). FC kendi başına bırakılsa bile bacağın sonuna
+# ulaşıp GCS planındaki iniş sekansına geçer — ama bu SÜREYLE SINIRLI DEĞİL
+# (hedefsiz sürünce ne kadar sürer bilinmez) ve daha önemlisi FC'nin kendi
+# ilerleyişi hiçbir zaman build_and_start_drop_mission'ı TETİKLEMEZ; bu
+# zaman aşımı hâlâ gerekli — kod tarafının sonsuza dek beklemeyip elindeki
+# hedeflerle (varsa) drop misyonunu kurup FC'yi kontrollü şekilde devralması
+# için.
 SEARCH_TOTAL_TIMEOUT_SEC   = 300
 # nearest_telemetry_at eşleşmesi bu yaştan eskiyse tespit örneği REDDEDİLİR
 # (eskiden yalnızca log uyarısı vardı, hesap yine de yapılıyordu) — bayat
@@ -296,7 +308,7 @@ SEARCH_START_WP     = 4      # Bu WP'ye gelince tarama hızına geç (GCS planı
 DETECTION_ACTIVE_WP = 4      # Bu WP'ye gelince tespit aktif olur (GCS planına göre ayarla)
 SEARCH_SPEED_MS     = 10.0   # Tarama hızı (m/s)
 DROP_SPEED_MS       = 10.0   # Yük bırakmadan önce hız (m/s)
-SEARCH_LOOP_EXIT_WP = 12     # Bu index'ten itibaren olan öğeler "iniş sekansı" sayılır ve yeni drop
+SEARCH_LOOP_EXIT_WP = 13     # Bu index'ten itibaren olan öğeler "iniş sekansı" sayılır ve yeni drop
                               # misyonuna olduğu gibi eklenir (bkz. mission.build_and_start_drop_mission).
                               # 2026-08-19: GCS planı artık DO_JUMP KULLANMIYOR (tarama döngüsü farklı
                               # şekilde kuruldu) — mission.py'deki DO_JUMP koruması (iniş sekansında
