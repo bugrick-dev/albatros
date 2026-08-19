@@ -242,6 +242,7 @@ def opencv_processing_thread(queue):
             "-r", str(config.FPS),
             "-i", "-",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-pix_fmt", "yuv420p", "-profile:v", "baseline",
             "-b:v", str(config.BITRATE), "-maxrate", str(config.BITRATE),
             "-bufsize", str(config.BITRATE // 2), "-g", str(config.INTRA),
             "-flush_packets", "1",
