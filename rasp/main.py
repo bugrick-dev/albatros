@@ -17,7 +17,6 @@ Modüller:
 """
 import asyncio
 import logging
-import sys
 import threading
 
 from mavsdk import System
@@ -55,19 +54,18 @@ async def run():
     log.info(f"  Tespit  : WP {config.DETECTION_ACTIVE_WP}'de aktif")
     log.info("=" * 60)
 
-    # 1. WiFi monitor mode
+    # 1-2. Video pipeline (rpicam-vid + WFB-ng)
     # NOT (2026-08-16): GPIO servo yolu kaldırıldı — yükler artık sadece FC
     # üzerinden (DO_SET_SERVO) tetikleniyor, RPi GPIO'ya hiçbir servo
     # bağlanmayacak (bkz. servo.py silindi, mission.py drop_trigger_task).
-    iface = pipeline.setup_monitor_mode()
-    if not iface:
-        log.info("[MAIN] Monitor mode kurulamadı — çıkılıyor")
-        sys.exit(1)
-
-    # 2. Video pipeline (WFB-ng + rpicam)
-    if not pipeline.start_pipeline(iface):
-        log.info("[MAIN] Pipeline başlatılamadı — çıkılıyor")
-        sys.exit(1)
+    # NOT (2026-08-19): WFB dongle bulunamazsa artık süreç sonlanmıyor —
+    # rpicam-vid + OpenCV tespiti dongle'dan bağımsız hemen başlar, WFB
+    # dongle arka planda süresiz aranır (bkz. pipeline._wfb_startup_retry_loop).
+    # Eskiden dongle yokken (takılı değil / undervoltage ile USB'den düşmüş)
+    # sys.exit(1) tüm süreci kapatıp systemd'yi 3sn'de bir crash-loop'a
+    # sokuyordu, görüntü işleme ve mission görevleri de dongle bekleyerek hiç
+    # başlamıyordu (sahada tekrarlanan restart sorunu).
+    pipeline.start_pipeline()
 
     # 4. OpenCV thread
     log.info("[MAIN] OpenCV thread başlatılıyor...")

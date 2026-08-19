@@ -30,38 +30,10 @@ def _find_iface_by_mac():
     return None
 
 
-def setup_monitor_mode(retry_timeout=20, retry_interval=1.0):
-    """WiFi arayüzünü MAC adresine göre bulur ve monitor mode'a alır.
-
-    Batarya/BEC beslemesinde açılışta gerilim toparlanana kadar USB WiFi
-    adaptörü geç enumerate olabilir — bu yuzden tek seferlik kontrol yerine
-    sinirli sure tekrar denenir.
-    """
-    log.info(f"[PIPELINE] WiFi arayüzü aranıyor (MAC={config.WFB_MAC})...")
-
-    try:
-        iface = None
-        start = time.time()
-        attempt = 0
-        while time.time() - start < retry_timeout:
-            attempt += 1
-            iface = _find_iface_by_mac()
-            if iface:
-                break
-            log.info(f"[PIPELINE] MAC {config.WFB_MAC} bulunamadı (deneme {attempt}), "
-                  f"{retry_interval}s sonra tekrar denenecek...")
-            time.sleep(retry_interval)
-
-        if not iface:
-            log.info(f"[PIPELINE] HATA: MAC {config.WFB_MAC} {retry_timeout}s içinde hiçbir satırda bulunamadı!")
-            return None
-
-        log.info(f"[PIPELINE] ✓ Arayüz: {iface}")
-
-    except Exception as e:
-        log.info(f"[PIPELINE] HATA: ip link çalıştırılamadı: {e}")
-        return None
-
+def _arm_monitor_mode(iface):
+    """Bulunmuş bir arayüzü rfkill/NetworkManager + ip/iw dizisiyle monitor
+    mode'a alır. setup_monitor_mode() (açılış) ve _wfb_startup_retry_loop()
+    (gecikmeli bulma) tarafından ortak kullanılır."""
     log.info("[PIPELINE] rfkill unblock + NetworkManager durduruluyor...")
     subprocess.run(["sudo", "rfkill", "unblock", "all"], check=False)
     subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], check=False)
@@ -82,6 +54,44 @@ def setup_monitor_mode(retry_timeout=20, retry_interval=1.0):
             log.info(f"[PIPELINE]   stderr: {r.stderr.strip()}")
 
     log.info(f"[PIPELINE] ✓ Monitor mode aktif: {iface} | kanal={config.WFB_CHANNEL}")
+
+
+def setup_monitor_mode(retry_timeout=20, retry_interval=1.0):
+    """WiFi arayüzünü MAC adresine göre bulur ve monitor mode'a alır.
+
+    Batarya/BEC beslemesinde açılışta gerilim toparlanana kadar USB WiFi
+    adaptörü geç enumerate olabilir — bu yuzden tek seferlik kontrol yerine
+    sinirli sure tekrar denenir. Bu sure icinde de bulunamazsa artik HATA
+    verip surecı sonlandırmaz — None doner, cagiran taraf (start_pipeline)
+    aramayi arka planda sinirsiz surdurur (bkz. _wfb_startup_retry_loop).
+    """
+    log.info(f"[PIPELINE] WiFi arayüzü aranıyor (MAC={config.WFB_MAC})...")
+
+    try:
+        iface = None
+        start = time.time()
+        attempt = 0
+        while time.time() - start < retry_timeout:
+            attempt += 1
+            iface = _find_iface_by_mac()
+            if iface:
+                break
+            log.info(f"[PIPELINE] MAC {config.WFB_MAC} bulunamadı (deneme {attempt}), "
+                  f"{retry_interval}s sonra tekrar denenecek...")
+            time.sleep(retry_interval)
+
+        if not iface:
+            log.info(f"[PIPELINE] MAC {config.WFB_MAC} {retry_timeout}s içinde hiçbir satırda "
+                     f"bulunamadı — arka planda aranmaya devam edilecek")
+            return None
+
+        log.info(f"[PIPELINE] ✓ Arayüz: {iface}")
+
+    except Exception as e:
+        log.info(f"[PIPELINE] HATA: ip link çalıştırılamadı: {e}")
+        return None
+
+    _arm_monitor_mode(iface)
     return iface
 
 
@@ -124,6 +134,33 @@ def _restart_wfb(iface):
         log.info(f"[WATCHDOG] wfb_tx yeniden başlatıldı → PID={state.wfb_process.pid}")
     except Exception as e:
         log.info(f"[WATCHDOG] wfb_tx yeniden başlatma HATA: {e}")
+
+
+def _wfb_startup_retry_loop(retry_interval=3.0):
+    """Açılışta WFB dongle bulunamazsa (henüz takılmamış / undervoltage
+    nedeniyle USB'den düşmüş vb.) süresiz olarak arka planda aramaya devam
+    eder. Bulununca monitor mode'u kurup wfb_tx'i başlatır ve normal
+    watchdog'a devreder. rpicam-vid + OpenCV tespiti + mission/FC görevleri
+    bu döngüyü BEKLEMEZ, dongle yokken de çalışmaya devam eder — eskiden
+    dongle bulunamayınca tüm süreç exit(1) ile kapanıp systemd'yi 3sn'de bir
+    crash-loop'a sokuyordu (2026-08-19, sahada tekrarlanan restart sorunu)."""
+    log.info(f"[PIPELINE] WFB dongle arka planda aranmaya devam ediyor (MAC={config.WFB_MAC})...")
+    attempt = 0
+    while not state.shutdown_requested.is_set():
+        attempt += 1
+        iface = _find_iface_by_mac()
+        if iface:
+            log.info(f"[PIPELINE] ✓ WFB dongle bulundu (deneme {attempt}) → {iface}")
+            _arm_monitor_mode(iface)
+            _restart_wfb(iface)
+            watchdog_thread = threading.Thread(target=_wfb_watchdog, args=(iface,), daemon=True)
+            watchdog_thread.start()
+            return
+        if attempt % 10 == 1:
+            log.info(f"[PIPELINE] WFB dongle hâlâ yok (deneme {attempt}), aramaya devam ediliyor "
+                     f"(video downlink pasif, görüntü işleme/mission etkilenmiyor)...")
+        time.sleep(retry_interval)
+    log.info("[PIPELINE] Kapanış sinyali alındı, WFB arka plan arama döngüsü durdu")
 
 
 def _wfb_watchdog(iface):
@@ -189,22 +226,22 @@ def restart_rpicam():
         log.info(f"[PIPELINE] rpicam yeniden başlatma HATA: {e}")
 
 
-def start_pipeline(iface):
-    """WFB-ng transmitter ve rpicam-vid süreçlerini başlatır."""
+def start_pipeline():
+    """rpicam-vid + WFB-ng transmitter süreçlerini başlatır.
+
+    rpicam-vid (yerel kamera yakalama, OpenCV tespit thread'inin girdisi)
+    WFB dongle'dan TAMAMEN BAĞIMSIZ olarak hemen başlar — dongle sahada geç
+    takılsa, USB'den düşse (undervoltage vb.) ya da hiç takılı olmasa bile
+    görüntü işleme/tespit ve mission/FC görevleri çalışmaya devam eder.
+    WFB (video downlink) dongle açılışta bulunursa hemen kurulur; bulunamazsa
+    arka planda süresiz aranır (bkz. _wfb_startup_retry_loop) — eskiden
+    dongle yokken tüm süreç exit(1) ile kapanıp systemd'yi crash-loop'a
+    sokuyordu (2026-08-19, sahada tekrarlanan restart sorunu)."""
     log.info("\n[PIPELINE] Pipeline başlatılıyor...")
 
-    # WFB-ng
-    wfb_cmd = (
-        f"sudo wfb_tx -K {config.WFB_KEY_PATH} "
-        f"-i {config.WFB_LINK_ID} -p 0 -u {config.WFB_UDP_PORT} "
-        f"-M {config.WFB_MCS} -B {config.WFB_BANDWIDTH} -G {config.WFB_GUARD_INTERVAL} "
-        f"-L {config.WFB_LDPC} -k {config.WFB_FEC_K} -n {config.WFB_FEC_N} {iface}"
-    )
-    log.info(f"[PIPELINE] wfb_tx komutu: {wfb_cmd}")
-    wfb_out = open(WFB_TX_LOG_PATH, "wb")
-    state.wfb_process = subprocess.Popen(shlex.split(wfb_cmd), stdout=wfb_out, stderr=subprocess.STDOUT)
-    log.info(f"[PIPELINE] wfb_tx başladı → PID={state.wfb_process.pid} | log={WFB_TX_LOG_PATH}")
-    time.sleep(2)
+    # WFB log dosyasını bu çalışma için temizle — wfb_tx ister hemen, ister
+    # arka plan aramasından sonra gecikmeli başlasın, log baştan yazılsın.
+    open(WFB_TX_LOG_PATH, "wb").close()
 
     # rpicam-vid — NOT: --rotation KASITLI olarak kullanılmıyor. Kamera fiziksel
     # olarak ters monte edilse bile capture native (ham) yönde kalır; tespit/GPS
@@ -222,8 +259,22 @@ def start_pipeline(iface):
     _spawn_rpicam()
     time.sleep(5)
 
-    watchdog_thread = threading.Thread(target=_wfb_watchdog, args=(iface,), daemon=True)
-    watchdog_thread.start()
+    # WFB-ng — dongle hazırsa hemen kur+başlat, değilse arka plana devret.
+    iface = setup_monitor_mode()
+    if iface:
+        wfb_cmd = _wfb_cmd_str(iface)
+        log.info(f"[PIPELINE] wfb_tx komutu: {wfb_cmd}")
+        wfb_out = open(WFB_TX_LOG_PATH, "ab")
+        state.wfb_process = subprocess.Popen(shlex.split(wfb_cmd), stdout=wfb_out, stderr=subprocess.STDOUT)
+        log.info(f"[PIPELINE] wfb_tx başladı → PID={state.wfb_process.pid} | log={WFB_TX_LOG_PATH}")
+        time.sleep(2)
+
+        watchdog_thread = threading.Thread(target=_wfb_watchdog, args=(iface,), daemon=True)
+        watchdog_thread.start()
+    else:
+        log.info("[PIPELINE] ⚠ WFB dongle açılışta bulunamadı — video downlink pasif başlıyor, "
+                 "görüntü işleme/mission akışı normal devam ediyor")
+        threading.Thread(target=_wfb_startup_retry_loop, daemon=True).start()
 
     log.info("[PIPELINE] ✓ Pipeline hazır (FFmpeg + GStreamer vision thread'inde başlayacak)\n")
     return True

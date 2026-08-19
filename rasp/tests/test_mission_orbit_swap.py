@@ -171,15 +171,10 @@ async def build_and_start_orbit_mission(drone, targets):
 # ==================== KARE TESPİTİ (WFB video pipeline üzerinden) ====================
 
 def start_video_pipeline():
-    """main.py ile AYNI: monitor mode + WFB-ng + rpicam-vid + OpenCV thread."""
-    iface = pipeline.setup_monitor_mode()
-    if not iface:
-        print("[TEST] Monitor mode kurulamadı — çıkılıyor")
-        sys.exit(1)
-
-    if not pipeline.start_pipeline(iface):
-        print("[TEST] Pipeline başlatılamadı — çıkılıyor")
-        sys.exit(1)
+    """main.py ile AYNI: rpicam-vid + WFB-ng + OpenCV thread. WFB dongle
+    bulunamazsa artık çıkılmıyor — main.py'deki 2026-08-19 düzeltmesiyle
+    aynı: rpicam/OpenCV hemen başlar, dongle arka planda aranır."""
+    pipeline.start_pipeline()
 
     print("[TEST] OpenCV thread başlatılıyor...")
     opencv_thread = threading.Thread(
