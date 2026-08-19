@@ -222,6 +222,19 @@ DETECTION_TRACK_MAX_SEC  = 4.0
 # mantığına düşülür.
 TRACKER_MAX_BRIDGE_FRAMES = 4
 
+# MOSSE'nin PSR güven eşiği küçük yamalarda (gerçek fotoğrafla ölçüldü,
+# 2026-08-19) güvenilir GEÇMİYOR: ~40px altında hemen hiç, ~40-60px arası
+# tutarsız, ≥80px'de tutarlı çalışıyor. Uçuş boyunca hedefin GÖRÜNÜR
+# boyutu irtifaya göre büyük ölçüde değişiyor (yüksek irtifa/uzak tespit
+# küçük, orbit/yaklaşma büyük) — bu yüzden tracker'a ham tespit bbox'ı
+# DEĞİL, hedefin merkezini koruyarak en az bu boyuta PADDING'lenmiş bir
+# yama veriliyor (bkz. vision._pad_bbox_to_min_size). Böylece köprüleme
+# yalnızca yakın/büyük tespitlerle sınırlı kalmıyor, irtifa değişimlerine
+# dayanıklı oluyor — fazladan verilen çevresel doku MOSSE'nin kilitlenmesi
+# için gerekli, hedefin kendisi yamanın küçük bir kısmı olsa bile işe
+# yarıyor (18-150px arası gerçek fotoğrafla doğrulandı).
+TRACKER_MIN_PATCH_PX = 80
+
 # --- Kamera kalibrasyonu (cihaza özel, git'e girmez — bkz. tools/camera_calibrate.py) ---
 CAMERA_CALIB_PATH = Path(__file__).parent / "camera_calib.json"
 CAMERA_CALIBRATED = False

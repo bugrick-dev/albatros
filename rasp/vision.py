@@ -145,6 +145,25 @@ def _bbox_to_contour(x, y, w, h):
     return np.array([[[x0, y0]], [[x1, y0]], [[x1, y1]], [[x0, y1]]], dtype=np.int32)
 
 
+def _pad_bbox_to_min_size(x, y, w, h, min_size, frame_w, frame_h):
+    """Bbox'ı merkezini koruyarak en az min_size x min_size olacak şekilde
+    büyütür (çerçeve dışına taşarsa kelepçelenir, merkez kayabilir).
+
+    Neden: MOSSE'nin PSR güven eşiği küçük yamalarda güvenilir geçmiyor
+    (bkz. config.TRACKER_MIN_PATCH_PX notu) — hedefin GÖRÜNÜR boyutu irtifaya
+    göre büyük ölçüde değiştiğinden, tracker'a ham (küçük olabilecek) tespit
+    bbox'ı değil, çevresindeki gerçek dokuyu da içeren bu büyütülmüş yama
+    veriliyor. Böylece köprüleme yalnızca yakın/büyük tespitlerle sınırlı
+    kalmaz, irtifa değişimlerine dayanıklı olur."""
+    cx, cy = x + w / 2.0, y + h / 2.0
+    pw, ph = max(w, min_size), max(h, min_size)
+    px = int(round(max(0, min(cx - pw / 2.0, frame_w - pw))))
+    py = int(round(max(0, min(cy - ph / 2.0, frame_h - ph))))
+    pw = int(round(min(pw, frame_w - px)))
+    ph = int(round(min(ph, frame_h - py)))
+    return px, py, pw, ph
+
+
 def _update_detection(mask, color_key, queue, queued_colors, tel, tracking, frame, trackers):
     """
     Maskeden kare tespit eder. state.detected_targets HUD/overlay için her
@@ -179,11 +198,15 @@ def _update_detection(mask, color_key, queue, queued_colors, tel, tracking, fram
 
         # Gerçek (renk-doğrulanmış) tespit — MOSSE'yi bu karede YENİDEN
         # başlat. Sık sık resetlemek KASITLI: tracker'ı hep taze bir gerçek
-        # tespite dayandırıp sürüklenmenin birikmesini önler.
+        # tespite dayandırıp sürüklenmenin birikmesini önler. Bbox, hedef
+        # küçük (yüksek irtifa) olsa bile TRACKER_MIN_PATCH_PX'e padding'lenir
+        # — bkz. _pad_bbox_to_min_size notu.
         x, y, w, h = cv2.boundingRect(cnt)
+        tx, ty, tw, th = _pad_bbox_to_min_size(
+            x, y, w, h, config.TRACKER_MIN_PATCH_PX, config.WIDTH, config.HEIGHT)
         try:
             cv_tracker = cv2.legacy.TrackerMOSSE_create()
-            cv_tracker.init(frame, (x, y, w, h))
+            cv_tracker.init(frame, (tx, ty, tw, th))
         except Exception as e:
             cv_tracker = None
             log.debug(f"[VISION] {color_key} MOSSE init hatası: {e}")

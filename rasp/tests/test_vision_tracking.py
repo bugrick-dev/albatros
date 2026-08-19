@@ -65,20 +65,21 @@ def _pink_noise(h, w, seed):
 
 def _textured_frame(cx, cy, size, seed=7):
     """Tracker-özel testler için MOSSE'nin GERÇEKTEN kilitlenebildiği bir
-    frame üretir: pembe gürültü zemin + kontrastı artırılmış hedef yaması.
+    frame üretir: pembe gürültü zemin + kontrastı artırılmış hedef yaması
+    (`size`, HSV maskesindeki GERÇEK hedef boyutuyla eşleşir — küçük de
+    olabilir, büyük de).
 
     NOT (2026-08-19, saha dışı ölçüldü): bu cv2.legacy.TrackerMOSSE derlemesi
-    ~40px altındaki yama boyutlarında neredeyse HİÇBİR içerikte (gerçek
-    fotoğraf DAHİL) güvenilir kilitlenmiyor — yalnızca büyük/yakın-menzil
-    tespitlerde (config.MAX_AREA'ya yakın, ~sqrt(0.3*W*H)≈303px) köprüleme
-    fiilen devreye girecek; config.MIN_AREA'ya yakın küçük/uzak tespitlerde
-    (~18px) tracker.update() muhtemelen hep ok=False dönüp SESSİZCE eski
-    (tracker'sız) davranışa düşecek — bu bir hata DEĞİL, güvenli bir "no-op"
-    (bkz. vision._update_detection: ok=False → bridged=False → normal
-    miss_streak akışı). Bu yüzden test burada bilerek BÜYÜK (80px) bir yama
-    kullanıyor.
+    ~40px altındaki DÜZ/dokusuz yamalarda güvenilir kilitlenmiyor. Üretim
+    kodu bunu vision._pad_bbox_to_min_size ile çözüyor: tracker'a ham
+    (küçük olabilecek) tespit bbox'ı değil, hedefin merkezini koruyarak
+    config.TRACKER_MIN_PATCH_PX'e (80px) padding'lenmiş bir yama veriliyor
+    — bu fonksiyonun ürettiği zemin HER YERDE pembe gürültü olduğundan
+    (yalnızca `size`x`size` iç bölge kontrastı artırılmış), küçük bir
+    `size` verilse bile üretim kodunun eklediği padding gerçek dokulu bir
+    alana denk gelir — tıpkı sahada olacağı gibi (bkz.
+    test_tracker_bridges_small_far_target_via_padding).
     """
-    size = max(size, 80)
     frame_gray = _pink_noise(config.HEIGHT, config.WIDTH, seed=seed)
     x0, y0 = cx - size // 2, cy - size // 2
     x1, y1 = x0 + size, y0 + size
@@ -241,6 +242,38 @@ def test_tracker_bridge_budget_caps_then_resumes_normal_miss_tracking():
         vision._update_detection(empty_mask, "mavi", queue, queued_colors, LEVEL_TEL, tracking, frame, trackers)
 
     assert "mavi" in queued_colors, "Bütçe tükendikten sonra kadraj dışı finalize edilmedi"
+
+
+def test_tracker_bridges_small_far_target_via_padding():
+    """
+    İrtifa değişimlerine dayanıklılık (2026-08-19): hedefin GÖRÜNÜR boyutu
+    yüksek irtifada/uzak tespitte KÜÇÜK olabilir (~20px, config.MIN_AREA'ya
+    yakın) — MOSSE bu boyutta düz/dokusuz bir yamada güvenilir kilitlenmiyor
+    ama vision._pad_bbox_to_min_size ham bbox'ı TRACKER_MIN_PATCH_PX'e
+    padding'leyip çevresindeki gerçek dokuyu da tracker'a veriyor. Bu test,
+    yalnızca büyük/yakın tespitlerde değil KÜÇÜK tespitte de köprülemenin
+    çalıştığını doğruluyor.
+    """
+    state.detection_active.set()
+    queue, queued_colors, tracking, trackers = Queue(), set(), {"mavi": None, "kirmizi": None}, _new_trackers()
+
+    small_size = 20  # config.MIN_AREA (~307px²) civarı — sqrt(307)≈18px
+    mask = _square_mask(200, config.HEIGHT // 2, size=small_size)
+    frame = _textured_frame(200, config.HEIGHT // 2, small_size)
+    vision._update_detection(mask, "mavi", queue, queued_colors, LEVEL_TEL, tracking, frame, trackers)
+    assert state.detected_targets["mavi"] is not None
+    miss_before = tracking["mavi"]["miss_streak"]
+
+    empty_mask = np.zeros((config.HEIGHT, config.WIDTH), dtype=np.uint8)
+    vision._update_detection(empty_mask, "mavi", queue, queued_colors, LEVEL_TEL, tracking, frame, trackers)
+
+    assert state.detected_targets["mavi"] is not None, (
+        "Küçük (uzak/yüksek irtifa) hedefte padding'siz köprüleme başarısız oldu"
+    )
+    assert tracking["mavi"]["miss_streak"] == miss_before, (
+        "Küçük hedefte köprülenen kare miss_streak'i artırdı"
+    )
+    assert "mavi" not in queued_colors
 
 
 if __name__ == "__main__":
