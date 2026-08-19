@@ -138,7 +138,14 @@ def _finalize_track(color_key, tracking, queue, queued_colors, reason):
           f"— mission kuyruğuna eklendi")
 
 
-def _update_detection(mask, color_key, queue, queued_colors, tel, tracking):
+def _bbox_to_contour(x, y, w, h):
+    """MOSSE bbox'ını cv2.drawContours/_to_stream_contour ile uyumlu 4 köşeli
+    kontur dizisine çevirir (tracker köprüleme karelerinde overlay için)."""
+    x0, y0, x1, y1 = int(x), int(y), int(x + w), int(y + h)
+    return np.array([[[x0, y0]], [[x1, y0]], [[x1, y1]], [[x0, y1]]], dtype=np.int32)
+
+
+def _update_detection(mask, color_key, queue, queued_colors, tel, tracking, frame, trackers):
     """
     Maskeden kare tespit eder. state.detected_targets HUD/overlay için her
     zaman güncellenir.
@@ -150,14 +157,37 @@ def _update_detection(mask, color_key, queue, queued_colors, tel, tracking):
     (bkz. config.py DETECTION_CONFIRM_STREAK/DETECTION_LOST_STREAK/
     DETECTION_TRACK_MAX_SEC): art arda kötüleşme (en yakın noktayı geçtik),
     art arda kayıp (kadraj dışına çıktı) ya da süre aşımı (güvenlik ağı).
+
+    MOSSE köprüleme (2026-08-19, bkz. config.py TRACKER_MAX_BRIDGE_FRAMES):
+    HSV/kontur tespiti bu ARADA tek-iki kare kaçırırsa (motion blur, H264
+    blok gürültüsü, anlık parlama) `trackers[color_key]` son gerçek tespitten
+    beslenen bir MOSSE korelasyon tracker'ı tutar ve bu boşluğu tahmin edilen
+    konumla köprüler — miss_streak erken tetiklenip kısa geçiş penceresinde
+    hedef gereksiz yere kaybedilmesin diye. Tracker tahmini SADECE HUD/overlay
+    ve miss_streak köprülemesi için kullanılır; GPS kilidi (pixel_to_gps) her
+    zaman gerçek renk-doğrulanmış bir karede hesaplanır, sürüklenme riski
+    konum doğruluğuna asla karışmaz.
     """
     result = _detect_square_in_mask(mask)
     track = tracking[color_key]
     locked = color_key in queued_colors
+    tstate = trackers[color_key]
 
     if result:
         cx, cy, cnt = result
         state.detected_targets[color_key] = {"cx": cx, "cy": cy, "contour": cnt}
+
+        # Gerçek (renk-doğrulanmış) tespit — MOSSE'yi bu karede YENİDEN
+        # başlat. Sık sık resetlemek KASITLI: tracker'ı hep taze bir gerçek
+        # tespite dayandırıp sürüklenmenin birikmesini önler.
+        x, y, w, h = cv2.boundingRect(cnt)
+        try:
+            cv_tracker = cv2.legacy.TrackerMOSSE_create()
+            cv_tracker.init(frame, (x, y, w, h))
+        except Exception as e:
+            cv_tracker = None
+            log.debug(f"[VISION] {color_key} MOSSE init hatası: {e}")
+        trackers[color_key] = {"cv": cv_tracker, "bridged": 0}
 
         # Bayat telemetri reddi (2026-08-17, "277m belirsiz yönde sapma" analizi):
         # frame anına en yakın telemetri örneği bile TELEMETRY_MATCH_MAX_AGE_S'den
@@ -192,12 +222,26 @@ def _update_detection(mask, color_key, queue, queued_colors, tel, tracking):
                     track["worse_streak"] += 1
                     track["miss_streak"] = 0
     else:
-        state.detected_targets[color_key] = None
-        if track is not None and not locked:
-            track["miss_streak"] += 1
-            if track["miss_streak"] >= config.DETECTION_LOST_STREAK:
-                _finalize_track(color_key, tracking, queue, queued_colors, "kadraj dışı")
-                return
+        bridged = False
+        if (tstate is not None and tstate["cv"] is not None and not locked
+                and tstate["bridged"] < config.TRACKER_MAX_BRIDGE_FRAMES):
+            ok, bbox = tstate["cv"].update(frame)
+            if ok:
+                bx, by, bw, bh = bbox
+                cx, cy = int(bx + bw / 2), int(by + bh / 2)
+                state.detected_targets[color_key] = {
+                    "cx": cx, "cy": cy, "contour": _bbox_to_contour(bx, by, bw, bh),
+                }
+                tstate["bridged"] += 1
+                bridged = True
+
+        if not bridged:
+            state.detected_targets[color_key] = None
+            if track is not None and not locked:
+                track["miss_streak"] += 1
+                if track["miss_streak"] >= config.DETECTION_LOST_STREAK:
+                    _finalize_track(color_key, tracking, queue, queued_colors, "kadraj dışı")
+                    return
 
     track = tracking[color_key]
     if track is not None and not locked:
@@ -359,6 +403,7 @@ def opencv_processing_thread(queue):
     gps_data      = {}      # {color: (lat, lon)} — HUD için tracking'teki en-iyi örneği yansıtır
     queued_colors = set()   # her renk yalnızca bir kez kuyruğa girer (kilitlendi)
     tracking      = {"mavi": None, "kirmizi": None}  # {color: {"lat","lon","alt","dist","worse_streak","miss_streak","first_seen"} | None}
+    trackers      = {"mavi": None, "kirmizi": None}  # {color: {"cv": MOSSE tracker, "bridged": int} | None} — bkz. _update_detection
     frame_count   = 0
     fps_time      = time.time()
     current_fps   = 0
@@ -449,14 +494,14 @@ def opencv_processing_thread(queue):
 
             # Mavi kare tespiti
             mask_blue = _apply_morph(cv2.inRange(hsv, config.BLUE_HSV_LOWER, config.BLUE_HSV_UPPER))
-            _update_detection(mask_blue, "mavi", queue, queued_colors, tel, tracking)
+            _update_detection(mask_blue, "mavi", queue, queued_colors, tel, tracking, frame, trackers)
 
             # Kırmızı kare tespiti (iki HSV aralığı OR'lanır)
             mask_red = _apply_morph(cv2.bitwise_or(
                 cv2.inRange(hsv, config.RED1_HSV_LOWER, config.RED1_HSV_UPPER),
                 cv2.inRange(hsv, config.RED2_HSV_LOWER, config.RED2_HSV_UPPER),
             ))
-            _update_detection(mask_red, "kirmizi", queue, queued_colors, tel, tracking)
+            _update_detection(mask_red, "kirmizi", queue, queued_colors, tel, tracking, frame, trackers)
 
             for _color in ("mavi", "kirmizi"):
                 _t = tracking[_color]

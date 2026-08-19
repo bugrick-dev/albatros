@@ -206,6 +206,22 @@ DETECTION_CONFIRM_STREAK = 8
 DETECTION_LOST_STREAK    = 5
 DETECTION_TRACK_MAX_SEC  = 4.0
 
+# --- Ufak görsel tracker (MOSSE) ile kare köprüleme (bkz. vision._update_detection) ---
+# Yukarıdaki DETECTION_LOST_STREAK "tam bir görsel tracker yerine ucuz
+# tolerans" olarak yazılmıştı (2026-08-12) — geçiş süresi zaten çok kısa
+# olduğundan (birkaç saniye) hafif bir MOSSE korelasyon tracker'ı eklemek
+# ihmal edilebilir CPU maliyetiyle (~0.05ms/kare, 2026-08-19 ölçüldü)
+# sağlamlığı artırıyor: HSV/kontur tespiti TEK bir karede (motion blur,
+# H264 blok gürültüsü, anlık parlama) kaçırılırsa tracker son bilinen
+# konumu tahmin edip miss_streak'i erken tetiklemeden köprü kurar. GPS
+# KİLİDİ YİNE SADECE gerçek renk-doğrulanmış karelerden alınır — tracker
+# tahmini asla pixel_to_gps'e beslenmez, yalnızca HUD sürekliliği ve
+# miss_streak köprülemesi için kullanılır (sürüklenme riski GPS doğruluğunu
+# etkilemesin diye). TRACKER_MAX_BRIDGE_FRAMES aşılırsa (hedef gerçekten
+# kadraj dışına çıktı/MOSSE sürüklendi) normal DETECTION_LOST_STREAK
+# mantığına düşülür.
+TRACKER_MAX_BRIDGE_FRAMES = 4
+
 # --- Kamera kalibrasyonu (cihaza özel, git'e girmez — bkz. tools/camera_calibrate.py) ---
 CAMERA_CALIB_PATH = Path(__file__).parent / "camera_calib.json"
 CAMERA_CALIBRATED = False
