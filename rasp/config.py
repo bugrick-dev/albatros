@@ -285,7 +285,7 @@ SINGLE_TARGET_TIMEOUT_SEC  = 30
 #
 # NOT (2026-08-19): eskiden bu satırın gerekçesi "arama döngüsü DO_JUMP
 # nedeniyle sonsuza dek dönerdi" idi — GCS planı artık DO_JUMP KULLANMIYOR,
-# tarama bacağı WP4→SEARCH_LOOP_EXIT_WP arası düz/sonlu bir WP dizisi (bkz.
+# tarama bacağı SEARCH_START_WP→SEARCH_LOOP_EXIT_WP arası düz/sonlu bir WP dizisi (bkz.
 # SEARCH_LOOP_EXIT_WP notu). FC kendi başına bırakılsa bile bacağın sonuna
 # ulaşıp GCS planındaki iniş sekansına geçer — ama bu SÜREYLE SINIRLI DEĞİL
 # (hedefsiz sürünce ne kadar sürer bilinmez) ve daha önemlisi FC'nin kendi
@@ -304,8 +304,8 @@ FC_RECONNECT_INTERVAL_SEC  = 3    # Bağlantı koptuğunda (ör. kalibrasyon son
                                    # yeniden deneme aralığı — bkz. mission.fc_connection_task
 
 # --- Tarama / drop hız yönetimi ---
-SEARCH_START_WP     = 4      # Bu WP'ye gelince tarama hızına geç (GCS planına göre ayarla)
-DETECTION_ACTIVE_WP = 4      # Bu WP'ye gelince tespit aktif olur (GCS planına göre ayarla)
+SEARCH_START_WP     = 6      # Bu WP'ye gelince tarama hızına geç (GCS planına göre ayarla)
+DETECTION_ACTIVE_WP = 6      # Bu WP'ye gelince tespit aktif olur (GCS planına göre ayarla)
 SEARCH_SPEED_MS     = 10.0   # Tarama hızı (m/s)
 DROP_SPEED_MS       = 10.0   # Yük bırakmadan önce hız (m/s)
 SEARCH_LOOP_EXIT_WP = 13     # Bu index'ten itibaren olan öğeler "iniş sekansı" sayılır ve yeni drop
