@@ -35,17 +35,30 @@ def _dist_m(lat0, lon0, lat1, lon1):
 
 def test_center_pixel_matches_camera_pitch_geometry():
     """
-    Merkez piksel = boresight. roll=pitch=yaw=0 iken beklenen mesafe
+    Boresight piksel = optik merkez. roll=pitch=yaw=0 iken beklenen mesafe
     alt/tan(CAMERA_PITCH) olmalı (CAMERA_PITCH nadir-referanslı: 90°=düz
     aşağı, 0°=ufka paralel).
+
+    NOT (2026-08-19): eskiden "merkez piksel" = geometrik kare merkezi
+    (WIDTH/2, HEIGHT/2) sayılıyordu — bu yalnızca kalibrasyonsuz FOV
+    yaklaşıklığında doğru. Gerçek kalibrasyon (camera_calib.json) optik
+    merkezi cx=309.9/cy=208.3 veriyor, geometrik merkezden (320/240) ~10px
+    sol ~32px yukarıda — pixel_to_gps CAMERA_CALIBRATED iken haklı olarak
+    CAMERA_CX/CY'yi boresight sayıyor (geo.py offset_angle_x/y hesabı), bu
+    yüzden test de aynı referansı kullanmalı; aksi halde kalibrasyonun kendi
+    doğru davranışı "hata" gibi görünüyordu (got=64.15m != expected=60.00m).
     """
     alt = 60.0
+    if config.CAMERA_CALIBRATED:
+        boresight_cx, boresight_cy = config.CAMERA_CX, config.CAMERA_CY
+    else:
+        boresight_cx, boresight_cy = config.WIDTH / 2, config.HEIGHT / 2
     lat, lon = geo.pixel_to_gps(0.0, 0.0, alt, 0.0, 0.0, 0.0,
-                                 config.WIDTH / 2, config.HEIGHT / 2)
+                                 boresight_cx, boresight_cy)
     expected_dist = alt / math.tan(math.radians(config.CAMERA_PITCH))
     got_dist = _dist_m(0.0, 0.0, lat, lon)
     assert abs(got_dist - expected_dist) < 0.5, (
-        f"Merkez piksel mesafesi beklenenden sapıyor: got={got_dist:.2f}m "
+        f"Boresight piksel mesafesi beklenenden sapıyor: got={got_dist:.2f}m "
         f"expected={expected_dist:.2f}m"
     )
 

@@ -51,10 +51,21 @@ def test_lock_happens_at_closest_pass_not_first_sight():
     assert "mavi" in queued_colors, "Hedef hiç kilitlenmedi"
     assert queue.qsize() == 1
     locked = queue.get()
-    # Merkez piksel (boresight) mesafesi: alt/tan(CAMERA_PITCH) — ilk görülen
-    # kenar pikselinden ÇOK daha yakın olmalı.
+    # Beklenen "en yakın" mesafe: alt/tan(CAMERA_PITCH) formülü DEĞİL —
+    # bu satır y=HEIGHT//2'de sabit taranıyor, gerçek kalibrasyon boresight'ı
+    # (config.CAMERA_CY=208.3) bu satırda değil (2026-08-19, bkz. test_geo_math.py
+    # test_center_pixel_matches_camera_pitch_geometry notu). Bu yüzden beklenen
+    # değer, aynı taranan x'ler üzerinde geo.pixel_to_gps'in ürettiği GERÇEK
+    # minimum mesafeden hesaplanıyor — kalibrasyon merkezi nerede olursa olsun
+    # test kendi kendine tutarlı kalır, ilk görülen kenar pikselinden ÇOK daha
+    # yakın olmalı iddiası hâlâ doğrulanır.
     import geo
-    expected_center_dist = LEVEL_TEL["alt"] / np.tan(np.radians(config.CAMERA_PITCH))
+    candidate_dists = []
+    for x in range(50, config.WIDTH - 50, 15):
+        result = geo.pixel_to_gps(0.0, 0.0, LEVEL_TEL["alt"], 0.0, 0.0, 0.0, x, config.HEIGHT // 2)
+        if result is not None:
+            candidate_dists.append(geo.haversine(0.0, 0.0, *result))
+    expected_center_dist = min(candidate_dists)
     got_dist = geo.haversine(0.0, 0.0, locked["lat"], locked["lon"])
     assert abs(got_dist - expected_center_dist) < 1.0, (
         f"Kilit merkez geçişine değil, başka bir kareye denk geldi: "
