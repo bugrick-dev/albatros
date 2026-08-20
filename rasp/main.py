@@ -77,7 +77,19 @@ async def run():
     opencv_thread.start()
     log.info(f"[MAIN] OpenCV thread başladı (TID={opencv_thread.ident})")
 
-    # 5. MAVSDK bağlantısı
+    # 5. MAVSDK bağlantısı — FC bulunana kadar FAILSAFE ile SÜRESİZ dener.
+    # NOT (2026-08-20 kök neden): drone.connect()'in KENDİSİ bazen hiç
+    # dönmüyor (ör. seri port o an yoksa mavsdk_server içeride askıda
+    # kalabiliyor). Eskiden bu çağrı sarmalanmamıştı — tek bir askıda kalan
+    # deneme mission kodunu (WP takibi, tespit, servo/drop) saatlerce (bir
+    # sahada gözlemlenen: 19 saat) hiç çalıştırmadan durduruyordu, üstelik
+    # sessizce (bir sonraki log satırı bile basılmıyordu). Artık HEM
+    # connect() çağrısının kendisi HEM de sonrasındaki is_connected bekleyişi
+    # ayrı ayrı timeout'a sarılı; biri takılır/başarısız olursa YENİ bir
+    # System() ile baştan denenir. Video akışı bu döngüden bağımsız zaten
+    # sürüyor (ayrı thread) — bu döngü yalnızca mission görevlerinin ne
+    # zaman başlayacağını belirliyor, o yüzden süresiz beklemek video
+    # yayınını ETKİLEMEZ.
     log.info(f"\n[MAIN] MAVSDK bağlanıyor: serial://{config.FC_PORT}:{config.FC_BAUDRATE}")
 
     async def _wait_fc_connect(drone):
@@ -86,26 +98,48 @@ async def run():
                 return True
         return False
 
-    drone = System()
-    await drone.connect(system_address=f"serial://{config.FC_PORT}:{config.FC_BAUDRATE}")
+    drone = None
+    attempt = 0
+    while not state.shutdown_requested.is_set():
+        attempt += 1
+        candidate = System()
+        try:
+            await asyncio.wait_for(
+                candidate.connect(system_address=f"serial://{config.FC_PORT}:{config.FC_BAUDRATE}"),
+                timeout=config.FC_CONNECT_ATTEMPT_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            log.info(f"[MAIN] ⚠ FC connect() #{attempt} {config.FC_CONNECT_ATTEMPT_TIMEOUT_SEC}s içinde "
+                     f"dönmedi (askıda kaldı) — yeni denemeye geçiliyor")
+            await asyncio.sleep(config.FC_RECONNECT_INTERVAL_SEC)
+            continue
+        except Exception as e:
+            log.info(f"[MAIN] ⚠ FC connect() #{attempt} hata: {e} — yeni denemeye geçiliyor")
+            await asyncio.sleep(config.FC_RECONNECT_INTERVAL_SEC)
+            continue
 
-    log.info(f"[MAIN] FC bağlantısı bekleniyor (max {config.FC_CONNECT_TIMEOUT_SEC}s)...")
-    fc_connected = False
-    try:
-        fc_connected = await asyncio.wait_for(
-            _wait_fc_connect(drone),
-            timeout=config.FC_CONNECT_TIMEOUT_SEC,
-        )
-    except asyncio.TimeoutError:
-        pass
+        log.info(f"[MAIN] FC bağlantısı bekleniyor (deneme #{attempt}, max {config.FC_CONNECT_TIMEOUT_SEC}s)...")
+        try:
+            fc_connected = await asyncio.wait_for(
+                _wait_fc_connect(candidate),
+                timeout=config.FC_CONNECT_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            fc_connected = False
 
-    state.fc_connected = fc_connected
+        if fc_connected:
+            drone = candidate
+            state.fc_connected = True
+            log.info(f"[MAIN] ✓ FC bağlandı (deneme #{attempt})")
+            break
 
-    if not fc_connected:
-        log.info(f"[MAIN] ⚠ FC bağlantısı kurulamadı — yalnızca video modu aktif")
-        log.info("[MAIN] Görüntü yayını devam ediyor, Ctrl+C ile çıkın")
-        asyncio.create_task(mission.fc_connection_task(drone))
-        await asyncio.Event().wait()
+        log.info(f"[MAIN] ⚠ FC {config.FC_CONNECT_TIMEOUT_SEC}s içinde bağlanamadı "
+                 f"(deneme #{attempt}) — yeniden denenecek")
+        await asyncio.sleep(config.FC_RECONNECT_INTERVAL_SEC)
+
+    if drone is None:
+        # Buraya SADECE state.shutdown_requested (Ctrl+C) ile düşülür.
+        log.info("[MAIN] Kapanış istendi — FC bağlantı döngüsünden çıkılıyor")
         return
 
     log.info("\n" + "=" * 60)

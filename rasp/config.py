@@ -318,9 +318,18 @@ SEARCH_TOTAL_TIMEOUT_SEC   = 300
 # attitude/pozisyon ile projeksiyon "belirsiz yönlerde" büyük sapmaların ana
 # kaynaklarından (2026-08-17, 277m sapma analizi).
 TELEMETRY_MATCH_MAX_AGE_S  = 0.25
-FC_CONNECT_TIMEOUT_SEC     = 10   # FC bağlantısı kurulamazsa video-only moda geç
-FC_RECONNECT_INTERVAL_SEC  = 3    # Bağlantı koptuğunda (ör. kalibrasyon sonrası FC reboot)
-                                   # yeniden deneme aralığı — bkz. mission.fc_connection_task
+# 2026-08-20: drone.connect()'in KENDİSİ bazen hiç dönmüyor (gözlemlenen saha
+# olayı: seri port o an yoksa/USB-CDC ACM cihazı kaybolmuşsa mavsdk_server
+# içeride askıda kalabiliyor) — main.py artık bu çağrıyı da ayrıca bu süreyle
+# sarmalıyor, aksi halde tek bir askıda kalan deneme mission kodunu SAATLERCE
+# (gözlemlenen: 19 saat) hiç çalıştırmadan durdurabiliyordu.
+FC_CONNECT_ATTEMPT_TIMEOUT_SEC = 8
+FC_CONNECT_TIMEOUT_SEC     = 10   # connect() döndükten SONRA is_connected için bekleme
+FC_RECONNECT_INTERVAL_SEC  = 3    # Bağlantı kurulamadığında/koptuğunda (ör. kalibrasyon
+                                   # sonrası FC reboot, ya da seri port henüz gelmemiş)
+                                   # yeniden deneme aralığı — main.py'deki ilk-bağlantı
+                                   # döngüsü VE mission.fc_connection_task'ın kopma-sonrası
+                                   # yeniden bağlanması ikisi de bunu kullanır, SÜRESİZ dener.
 
 # --- Tarama / drop hız yönetimi ---
 SEARCH_START_WP     = 6      # Bu WP'ye gelince tarama hızına geç (GCS planına göre ayarla)
