@@ -574,11 +574,20 @@ def opencv_processing_thread(queue):
                 cv2.putText(stream_frame, f"WP: {wp['index']}/{wp['total']}", (10, 120),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
+                # Bu WP'ye GEÇİLDİĞİ ANDAKİ konum (2026-08-20) — POS'tan farkı:
+                # "şu an" değil, "bu WP'ye geçerken neredeydik" (bkz.
+                # mission.waypoint_tracking_task, state.current_wp).
+                if wp["lat"] is not None and wp["lon"] is not None:
+                    cv2.putText(
+                        stream_frame, f"WP{wp['index']} GPS: {wp['lat']:.6f}, {wp['lon']:.6f}",
+                        (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2,
+                    )
+
             fc_ok = state.fc_connected
             cv2.putText(
                 stream_frame,
                 f"FC: {'BAGLI' if fc_ok else 'BAGLI DEGIL'} ({config.FC_BAUDRATE})",
-                (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                 (0, 255, 0) if fc_ok else (0, 0, 255), 2,
             )
 
@@ -586,7 +595,7 @@ def opencv_processing_thread(queue):
             cv2.putText(
                 stream_frame,
                 f"RF: {'OK' if rf_ok else 'KOPTU'}",
-                (10, 175), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                (10, 205), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                 (0, 255, 0) if rf_ok else (0, 0, 255), 2,
             )
 

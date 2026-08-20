@@ -87,7 +87,10 @@ servo_events = {"mavi": None, "kirmizi": None}  # {color: {"channel","lat","lon"
 detection_active = threading.Event()
 
 # --- Aktif WP takibi ---
-current_wp       = {"index": None, "total": None}
+# lat/lon: bu WP'YE GEÇİLDİĞİ ANDAKİ uçak konumu (2026-08-20, bkz.
+# mission.waypoint_tracking_task) — "şu an neredeyiz" (current_telemetry)
+# değil, "bu WP'ye geçerken neredeydik" bilgisi, HUD'da kalıcı gösterilir.
+current_wp       = {"index": None, "total": None, "lat": None, "lon": None}
 
 # --- Alt süreç tutamaçları ---
 # (ffmpeg_decode_process kaldırıldı — decode aşaması 2026-08-16'da öldü)
