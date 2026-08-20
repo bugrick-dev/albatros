@@ -405,12 +405,18 @@ def _make_return_to_search_entry_item(existing):
 
 def _build_drop_items(release_points, approach_alt_m, approach_frame=3):
     """
-    Hedeflere YÖNLENDİRME waypoint'lerini oluşturur (NAV_WAYPOINT + hız
-    ayarları). Asıl drop tetikleme burada YOK — drop_trigger_task her
-    telemetri tik'inde güncel hız/irtifa ile balistik hesap yapıp doğru anda
-    tetikliyor (bkz. build_and_start_drop_mission), bu sayede tespit anındaki
-    eski/varsayılan hıza değil, bırakma anındaki gerçek hıza göre atılıyor.
+    Hedeflere YÖNLENDİRME waypoint'lerini oluşturur (sade NAV_WAYPOINT —
+    direkt WP'ye gidilir, servo AÇMA burada değil). Asıl drop tetikleme
+    burada YOK — drop_trigger_task her telemetri tik'inde güncel hız/irtifa
+    ile balistik hesap yapıp doğru anda tetikliyor (bkz.
+    build_and_start_drop_mission), bu sayede tespit anındaki eski/varsayılan
+    hıza değil, bırakma anındaki gerçek hıza göre atılıyor.
     Seq geçici 0 — insert sonrası yeniden numaralandırılır.
+
+    NOT (2026-08-20): waypoint çevresindeki DO_CHANGE_SPEED (yavaşla/hızlan)
+    çifti kaldırıldı — drop_trigger_task zaten GÜNCEL anlık hıza göre
+    balistik hesap yapıyor, mission'ın kendi hız komutuna ihtiyacı yok;
+    tek amacı uçağı doğrudan hedef koordinatına götürmek.
 
     approach_alt_m/approach_frame: waypoint'lerin İRTİFASI ve FRAME'i — GCS
     planındaki SEARCH_START_WP öğesinden (build_and_start_drop_mission'dan
@@ -431,16 +437,8 @@ def _build_drop_items(release_points, approach_alt_m, approach_frame=3):
               f"| WP irtifası (planlı)={approach_alt_m:.1f}m frame={approach_frame} ===")
 
         items.append(_make_mission_item(
-            0, config.CMD_DO_CHANGE_SPEED,
-            param1=1.0, param2=config.DROP_SPEED_MS, param3=-1.0,
-        ))
-        items.append(_make_mission_item(
             0, config.CMD_NAV_WAYPOINT, param2=15.0,
             lat=rp["lat"], lon=rp["lon"], alt=approach_alt_m, frame=approach_frame,
-        ))
-        items.append(_make_mission_item(
-            0, config.CMD_DO_CHANGE_SPEED,
-            param1=1.0, param2=config.DRONE_SPEED_MS, param3=-1.0,
         ))
     return items
 
@@ -452,9 +450,14 @@ async def build_and_start_drop_mission(drone, release_points):
     mevcut misyonun iniş sekansı (SEARCH_LOOP_EXIT_WP'den itibaren).
 
     ArduPilot, misyon öğesi seq=0'ı ne yüklenirse yüklensin FC'nin kayıtlı
-    HOME konumuyla değiştirir (doğrulanmış davranış). Bu yüzden seq 0'a bir
-    HOME dolgu öğesi konur, gerçek navigasyon (drop + iniş) seq 1'den başlar
-    ve set_current_mission_item(1) ile FC doğrudan oraya yönlendirilir —
+    HOME konumuyla değiştirir (doğrulanmış davranış) — ama bu davranışa körü
+    körüne güvenip (0,0,0) gibi anlamsız bir dolgu koymak yerine, indirilen
+    ESKİ misyonun kendi seq=0 öğesi (GCS'in yüklediği/FC'nin doldurduğu
+    GERÇEK home) AYNEN yeniden kullanılır (2026-08-20 düzeltmesi — eskiden
+    burada (0,0,0) koordinatlı sahte bir NAV_WAYPOINT vardı; ArduPilot'un
+    onu gerçekten ezdiğini varsaymak yerine artık zaten doğru veriyle
+    başlıyoruz). Gerçek navigasyon (drop + iniş) seq 1'den başlar ve
+    set_current_mission_item(1) ile FC doğrudan oraya yönlendirilir —
     aksi halde ilk drop hedefi sessizce home ile değiştirilip atlanabilirdi.
     """
     log.info(f"[MISSION] Mevcut misyon indiriliyor (iniş WP'lerini almak için)...")
@@ -490,10 +493,10 @@ async def build_and_start_drop_mission(drone, release_points):
     log.info(f"[MISSION] {len(drop_items)} drop öğesi oluşturuldu "
              f"| yaklaşma irtifası={approach_alt_m:.1f}m frame={approach_frame}")
 
-    home_placeholder = _make_mission_item(0, config.CMD_NAV_WAYPOINT, frame=3)
-    new_mission = [home_placeholder, return_item] + drop_items + landing_items
+    home_item = existing[0]  # gerçek HOME — indirilen eski misyonun seq=0 öğesi, AYNEN korunur
+    new_mission = [home_item, return_item] + drop_items + landing_items
 
-    # Tüm seq numaralarını sıfırdan yeniden düzenle — item 0 = home dolgu,
+    # Tüm seq numaralarını sıfırdan yeniden düzenle — item 0 = gerçek home,
     # item 1 = tarama girişine dönüş, item 2 = ilk drop öğesi
     resequenced = [
         RawMissionItem(
@@ -508,7 +511,7 @@ async def build_and_start_drop_mission(drone, release_points):
         for i, item in enumerate(new_mission)
     ]
     log.info(f"[MISSION] Yeni misyon: {len(resequenced)} öğe "
-          f"(1 home dolgu + 1 dönüş + {len(drop_items)} drop + {len(landing_items)} iniş)")
+          f"(1 home + 1 dönüş + {len(drop_items)} drop + {len(landing_items)} iniş)")
 
     await drone.mission_raw.upload_mission(resequenced)
     log.info("[MISSION] ✓ upload_mission() tamamlandı")
@@ -529,10 +532,19 @@ async def build_and_start_drop_mission(drone, release_points):
 # ==================== WP TAKİBİ ====================
 
 async def waypoint_tracking_task(drone):
-    """Aktif WP index'ini state.current_wp'de tutar — overlay için."""
+    """Aktif WP index'ini state.current_wp'de tutar — overlay için.
+    WP değiştiği ANDAKİ uçak GPS konumu da ayrıca saklanır (2026-08-20,
+    bkz. vision.py HUD) — "şu an neredeyiz" (POS) değil, "bu WP'ye
+    GEÇERKEN neredeydik" bilgisi."""
+    last_index = None
     async for progress in drone.mission_raw.mission_progress():
         state.current_wp["index"] = progress.current
         state.current_wp["total"] = progress.total
+        if progress.current != last_index:
+            last_index = progress.current
+            with state.telemetry_lock:
+                state.current_wp["lat"] = state.current_telemetry["lat"]
+                state.current_wp["lon"] = state.current_telemetry["lon"]
 
 
 # ==================== TESPİT AKTİVASYONU ====================
