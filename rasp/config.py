@@ -330,10 +330,11 @@ FC_RECONNECT_INTERVAL_SEC  = 3    # Bağlantı kurulamadığında/koptuğunda (�
                                    # döngüsü VE mission.fc_connection_task'ın kopma-sonrası
                                    # yeniden bağlanması ikisi de bunu kullanır, SÜRESİZ dener.
 
-# --- Tarama / drop hız yönetimi ---
-SEARCH_START_WP     = 6      # Bu WP'ye gelince tarama hızına geç (GCS planına göre ayarla)
+# --- Tarama / drop WP yönetimi ---
+# NOT (2026-08-20): hız yönetimi (DO_CHANGE_SPEED) koddan tamamen kaldırıldı
+# — uçak kendi (GCS/FC'de ayarlı) hızında uçar, kod tarafı yalnızca WP koyar.
+SEARCH_START_WP     = 6      # Bu WP'ye gelince tarama moduna geç (GCS planına göre ayarla)
 DETECTION_ACTIVE_WP = 6      # Bu WP'ye gelince tespit aktif olur (GCS planına göre ayarla)
-SEARCH_SPEED_MS     = 10.0   # Tarama hızı (m/s)
 SEARCH_LOOP_EXIT_WP = 20     # Bu index'ten itibaren olan öğeler "iniş sekansı" sayılır ve yeni drop
                               # misyonuna olduğu gibi eklenir (bkz. mission.build_and_start_drop_mission).
                               # 2026-08-19: GCS planı artık DO_JUMP KULLANMIYOR (tarama döngüsü farklı

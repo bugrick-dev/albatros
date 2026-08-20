@@ -46,7 +46,7 @@ async def run():
                   f"GPS hesabı hatalı olabilir! bkz. tools/camera_calibrate.py")
     log.info(f"  FC      : {config.FC_PORT} @ {config.FC_BAUDRATE}baud")
     log.info(f"  WFB     : MAC={config.WFB_MAC}  kanal={config.WFB_CHANNEL}")
-    log.info(f"  Tarama  : WP {config.SEARCH_START_WP} → {config.SEARCH_SPEED_MS}m/s | "
+    log.info(f"  Tarama  : WP {config.SEARCH_START_WP} (hız yönetimi YOK — kendi hızında) | "
           f"loop çıkış WP={config.SEARCH_LOOP_EXIT_WP}")
     log.info(f"  Drop    : kurma={config.DROP_TRIGGER_RADIUS_M}m "
              f"cross-max={config.DROP_MAX_CROSS_TRACK_M}m t-tetik={config.DROP_ALONG_TRIGGER_S}s (FC servo)")
@@ -157,7 +157,6 @@ async def run():
             mission.speed_track_task(drone),
             mission.gps_health_task(drone),
             mission.mission_task(drone, state.target_queue),
-            mission.speed_management_task(drone),
             mission.detection_activation_task(drone),
             mission.waypoint_tracking_task(drone),
         )

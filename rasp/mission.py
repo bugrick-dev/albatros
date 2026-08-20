@@ -288,29 +288,6 @@ async def drop_trigger_task(drone, release_points):
             break
 
 
-# ==================== HIZ YÖNETİMİ ====================
-
-def _make_speed_command(speed_ms):
-    """COMMAND_LONG / DO_CHANGE_SPEED MAVLink mesajı oluşturur."""
-    return MavlinkMessage(
-        message_name="COMMAND_LONG",
-        system_id=255,
-        component_id=190,
-        target_system_id=1,
-        target_component_id=1,
-        fields_json=json.dumps({
-            "target_system": 1,
-            "target_component": 1,
-            "command": config.CMD_DO_CHANGE_SPEED,
-            "confirmation": 0,
-            "param1": 1.0,       # groundspeed
-            "param2": speed_ms,
-            "param3": -1.0,      # throttle değişikliği yok
-            "param4": 0.0, "param5": 0.0, "param6": 0.0, "param7": 0.0,
-        })
-    )
-
-
 def _servo_pwm_for(servo_no):
     """
     Her servo kendi güvenli PWM aralığıyla ayrı tanımlı (sahada doğrulandı).
@@ -341,32 +318,11 @@ def _make_servo_command(servo_no, pwm):
     )
 
 
-async def speed_management_task(drone):
-    """
-    Misyon ilerlemesini izler; SEARCH_START_WP'ye gelince
-    mavlink_direct üzerinden DO_CHANGE_SPEED gönderir.
-    """
-    log.info(f"[SPEED] WP takibi başladı — WP {config.SEARCH_START_WP}'de "
-          f"{config.SEARCH_SPEED_MS}m/s'ye düşülecek")
-    async for progress in drone.mission_raw.mission_progress():
-        log.info(f"[SPEED] Misyon ilerleme: WP {progress.current}/{progress.total}")
-        # >= (== değil, 2026-08-17): tek bir progress olayı kaçarsa/atlanırsa
-        # (ör. 3→5) hız düşürme HİÇ tetiklenmiyordu ve tarama 15m/s'de
-        # yapılıyordu — detection_activation_task'taki mantıkla aynı hizaya
-        # getirildi.
-        if progress.current >= config.SEARCH_START_WP:
-            log.info(f"[SPEED] WP {config.SEARCH_START_WP} ulaşıldı → "
-                  f"DO_CHANGE_SPEED={config.SEARCH_SPEED_MS}m/s gönderiliyor...")
-            try:
-                await drone.mavlink_direct.send_message(_make_speed_command(config.SEARCH_SPEED_MS))
-                log.info(f"[SPEED] ✓ Hız başarıyla {config.SEARCH_SPEED_MS}m/s'ye düşürüldü")
-            except Exception as e:
-                log.info(f"[SPEED] HATA: Hız komutu gönderilemedi: {e}")
-            log.info("[SPEED] speed_management_task görevi tamamlandı, sonlanıyor")
-            break
-
-
 # ==================== DROP MİSYONU ====================
+# NOT (2026-08-20): speed_management_task (SEARCH_START_WP'de DO_CHANGE_SPEED
+# gönderen görev) kaldırıldı — hız yönetimi kod tarafının işi değil, uçak
+# kendi (GCS/FC'de ayarlı) hızında uçar. Kod tarafı yalnızca WP koyar ve
+# doğru anda servo tetikler (bkz. drop_trigger_task).
 
 def _make_mission_item(seq, command, param1=0.0, param2=0.0, param3=0.0, param4=0.0,
                        lat=0.0, lon=0.0, alt=0.0, frame=2):
