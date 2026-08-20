@@ -10,3 +10,8 @@ rasp/tools/last_capture.jpg
 .venv/
 __pycache__/
 *.pyc
+
+# Çalışma zamanı log dosyaları — gerçek loglar /home/albatros/logs/ altında
+# (repo dışı), rasp/main.log 13 Ağustos'tan kalma durağan/yanıltıcı bir
+# artıktı, yanlışlıkla commit edilmişti (2026-08-20).
+rasp/*.log
