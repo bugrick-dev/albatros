@@ -48,9 +48,9 @@ MAX_AREA = int(0.3   * WIDTH * HEIGHT)
 # pozitif riski artar (bkz. MAX_DETECTION_DISTANCE_M/roll/pitch reddi zaten
 # uzak/şüpheli tespitleri eliyor ama sahte YAKIN tespitlere karşı koruma
 # değil).
-BLUE_H_MIN, BLUE_H_MAX =  95, 135
-BLUE_S_MIN, BLUE_S_MAX =  60, 255
-BLUE_V_MIN, BLUE_V_MAX =  35, 255
+BLUE_H_MIN, BLUE_H_MAX =  95, 120
+BLUE_S_MIN, BLUE_S_MAX =  90, 255
+BLUE_V_MIN, BLUE_V_MAX =  70, 255
 
 # 2026-08-17: gerçek uçuş kaydından alınan bir kareden (26.9m ALT, WP 14/19)
 # cv2 ile PİXEL-EXACT ölçüldü (artık gözle tahmin değil):
@@ -59,15 +59,34 @@ BLUE_V_MIN, BLUE_V_MAX =  35, 255
 #         maskeden geçiyor. Yani mavi için HSV hiç sorun değilmiş; MAVİ: --
 #         sorunu is_square/ekstent tarafındandı (bkz. yukarıdaki ASPECT_RATIO/
 #         SQUARE_MIN_EXTENT notu, 45° kamera açısı → trapezoid görünüm).
+# 2026-08-20: ikinci saha ölçümü (67 nokta, aynı panel) — H 106-107, S 184-190,
+#         V 244-248 çıktı; 17 Ağustos ölçümüyle (H 105-106/S 183-187/V 244-248)
+#         neredeyse birebir örtüşüyor → gerçek renk çok tutarlı, sahte-pozitif
+#         riskini azaltmak için aralık HAFİFÇE daraltıldı (fazla geniş uçlar
+#         kırpıldı, ölçülen kümenin etrafında hâlâ büyük pay var):
+#           H  95-135 -> 95-120  (üstteki mor/magenta ucu kırpıldı; alt uç
+#              aynı bırakıldı, gölgede/donuk ışıkta H biraz düşebilir)
+#           S  60-255 -> 90-255  (ölçülen min 183-184'ün ~90-100 altı, toz/
+#              gölge/sıkıştırma payı bol)
+#           V  35-255 -> 70-255  (ölçülen min 244'ün ~170 altı, gölge payı bol)
+#         Bilhassa BÜYÜK daraltma yapılmadı (kaçırma riskine karşı temkinli).
 #   KIRMIZI/PEMBE panel: H≈154-163 (medyan 162), S≈51-124 (medyan 116, p5=51),
 #         V≈105-120 — klasik kırmızı değil, gerçekten pembe/magenta'ya kaymış.
 #         Eski RED2_H_MIN=170 bunu TAMAMEN dışarıda bırakıyordu (RED1 0-10 ve
 #         RED2 170-180 ikisi de kapsamıyordu). RED2_H_MIN önce 150'ye çekildi;
 #         ölçümle test edilince o aralık pikselin %84'ünü yakalıyordu — S_MIN=80
 #         alt kuyruğu (S=51-79) fazla kesiyordu, 65'e indirildi (marj için).
+# 2026-08-20: ikinci saha ölçümü (37 nokta, aynı panel) — H 162-164, S 90-133,
+#         V 209-229 çıktı. H ve V zaten mevcut aralığın (150-180 / 50-255)
+#         rahatça içinde, değişiklik gerekmedi. Ama S tarafında 17 Ağustos'un
+#         p5=51 alt kuyruğu hâlâ RED_S_MIN=65'in DIŞINDA kalıyordu (65-51=14
+#         puanlık kapanmamış boşluk) — bugünün ölçümü de S'nin ışığa göre
+#         geniş salındığını doğruladığından (51-133 arası, iki uçuş birlikte)
+#         RED_S_MIN 65 -> 45'e çekilerek bu boşluk kapatıldı ve p5'in altına
+#         da biraz pay bırakıldı.
 RED1_H_MIN, RED1_H_MAX =   0,  10
 RED2_H_MIN, RED2_H_MAX = 150, 180
-RED_S_MIN,  RED_S_MAX  =  65, 255
+RED_S_MIN,  RED_S_MAX  =  45, 255
 RED_V_MIN,  RED_V_MAX  =  50, 255
 
 # --- HSV eşik dizileri (cv2.inRange'de doğrudan kullanılır) ---
