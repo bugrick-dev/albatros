@@ -73,6 +73,16 @@ fc_reconnecting = False
 # --- Tespit edilen hedefler ---
 detected_targets = {"mavi": None, "kirmizi": None}
 
+# --- Kilitlenen (kuyruğa alınan/mission'a kaydedilen) hedeflerin GPS konumu ---
+# detected_targets'tan farkı: bu SABİT — hedef kadrajdan çıksa/tracker kaybolsa
+# bile burada kalır, HUD'da "kilitlendi" bilgisini kalıcı göstermek için
+# (2026-08-20, bkz. mission.py mission_task — release_points.append noktası).
+locked_targets = {"mavi": None, "kirmizi": None}  # {color: (lat, lon)} | None
+
+# --- Gönderilen servo (bırakma) komutları — HUD'da "SERVO AÇILDI" bilgisi için ---
+# (2026-08-20, bkz. mission.py _trigger_release).
+servo_events = {"mavi": None, "kirmizi": None}  # {color: {"channel","lat","lon","ts"}} | None
+
 # --- Tespit etkinleştirme (Direk 2 geçildikten sonra set edilir) ---
 detection_active = threading.Event()
 

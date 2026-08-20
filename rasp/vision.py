@@ -562,16 +562,23 @@ def opencv_processing_thread(queue):
                 cv2.putText(stream_frame, f"ALT: {tel['alt']:.1f}m", (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
+            # Anlık uçak GPS konumu (2026-08-20) — log'a bakmaya gerek kalmadan
+            # HUD'dan takip edilebilsin diye. tel zaten frame anına en yakın
+            # örneği taşıyor (bkz. state.nearest_telemetry_at).
+            if tel["lat"] is not None and tel["lon"] is not None:
+                cv2.putText(stream_frame, f"POS: {tel['lat']:.6f}, {tel['lon']:.6f}", (10, 90),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
             wp = state.current_wp
             if wp["index"] is not None:
-                cv2.putText(stream_frame, f"WP: {wp['index']}/{wp['total']}", (10, 90),
+                cv2.putText(stream_frame, f"WP: {wp['index']}/{wp['total']}", (10, 120),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
             fc_ok = state.fc_connected
             cv2.putText(
                 stream_frame,
                 f"FC: {'BAGLI' if fc_ok else 'BAGLI DEGIL'} ({config.FC_BAUDRATE})",
-                (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                 (0, 255, 0) if fc_ok else (0, 0, 255), 2,
             )
 
@@ -579,7 +586,7 @@ def opencv_processing_thread(queue):
             cv2.putText(
                 stream_frame,
                 f"RF: {'OK' if rf_ok else 'KOPTU'}",
-                (10, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                (10, 175), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                 (0, 255, 0) if rf_ok else (0, 0, 255), 2,
             )
 
@@ -594,6 +601,41 @@ def opencv_processing_thread(queue):
                     pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     col_ok if detected else col_no, 2,
                 )
+
+            # Kilitlenen hedefler (KALICI GPS, 2026-08-20) + gönderilen servo
+            # komutları ("SERVO AÇILDI") — ekranın ALT-SOL köşesinde, SABİT
+            # pozisyonlarda tek blok halinde (üstteki FPS/ALT/POS/WP/FC/RF
+            # bloğuyla ve sağ üstteki MAVI/KIRMIZI OK göstergesiyle çakışmasın
+            # diye; ayrıca satırlar renk bazında SABİT yerde kalsın ki bir
+            # olay gelip geçtikçe diğer satırlar yer değiştirmesin).
+            # detected_targets'tan farkı: locked/servo canlı tespitten
+            # bağımsız — hedef kadrajdan çıksa/tracker kaybolsa da kalır
+            # (bkz. state.locked_targets/servo_events, mission.py).
+            _hud_slots = (
+                ("mavi",    state.locked_targets["mavi"],
+                 lambda lat, lon: f"MAVI KILIT: {lat:.6f},{lon:.6f}",
+                 (255, 100, 0), config.HEIGHT - 140),
+                ("kirmizi", state.locked_targets["kirmizi"],
+                 lambda lat, lon: f"KIRMIZI KILIT: {lat:.6f},{lon:.6f}",
+                 (0, 0, 255), config.HEIGHT - 108),
+            )
+            for color, locked, fmt, box_color, y in _hud_slots:
+                if locked is not None:
+                    lat, lon = locked
+                    cv2.putText(stream_frame, fmt(lat, lon), (10, y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 2)
+
+            for color, y in (("mavi", config.HEIGHT - 70), ("kirmizi", config.HEIGHT - 45)):
+                ev = state.servo_events[color]
+                if ev is not None:
+                    lat_str = f"{ev['lat']:.6f}" if ev["lat"] is not None else "?"
+                    lon_str = f"{ev['lon']:.6f}" if ev["lon"] is not None else "?"
+                    cv2.putText(
+                        stream_frame,
+                        f"SERVO ACILDI: {color.upper()} kanal={ev['channel']} @ {lat_str},{lon_str}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (0, 255, 0), 2,
+                    )
 
             try:
                 _encode_queue.put_nowait(stream_frame.tobytes())

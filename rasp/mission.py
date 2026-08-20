@@ -166,7 +166,7 @@ async def gps_health_task(drone):
 
 # ==================== CANLI BALİSTİK DROP TETİKLEME ====================
 
-async def _trigger_release(drone, rp, release_points):
+async def _trigger_release(drone, rp, release_points, aircraft_lat=None, aircraft_lon=None):
     """FC'ye DO_SET_SERVO gönderip yükü bırakır (şartname eşlemesi: MAVİ hedefe
     KIRMIZI yük, KIRMIZI hedefe MAVİ yük — çapraz eşleme KASITLI)."""
     # NOT (2026-08-16): GPIO servo yolu tamamen kaldırıldı — RPi GPIO'ya
@@ -179,6 +179,14 @@ async def _trigger_release(drone, rp, release_points):
     log.info(f"[DROP] ✓ FC'ye DO_SET_SERVO gönderildi: kanal={servo_no} "
              f"pwm={release_pwm} (nötre dönülmüyor, açık kalıyor)")
     rp["dropped"] = True
+    # HUD'da "SERVO AÇILDI" kalıcı bilgisi için — komutun gönderildiği ANDAKİ
+    # uçak konumu (2026-08-20, bkz. vision.py overlay, state.servo_events).
+    state.servo_events[rp["color"]] = {
+        "channel": servo_no,
+        "lat": aircraft_lat,
+        "lon": aircraft_lon,
+        "ts": time.monotonic(),
+    }
     log.info(f"[DROP] {rp['color'].upper()} bırakıldı ✓ "
           f"(kalan: {sum(1 for r in release_points if not r['dropped'])})")
 
@@ -272,7 +280,8 @@ async def drop_trigger_task(drone, release_points):
                 log.info(f"[DROP] *** {rp['color'].upper()} TETİKLENİYOR! "
                       f"along={along:.1f}m cross={cross:.1f}m t={time_to:.2f}s "
                       f"{'(geçiş telafisi)' if passed else ''} ***")
-                await _trigger_release(drone, rp, release_points)
+                await _trigger_release(drone, rp, release_points,
+                                        pos.latitude_deg, pos.longitude_deg)
 
         if all(rp["dropped"] for rp in release_points):
             log.info("[DROP] ✓ Tüm yükler bırakıldı — drop_trigger_task sonlanıyor")
@@ -617,6 +626,11 @@ async def mission_task(drone, queue):
         })
         if first_detection_time is None:
             first_detection_time = time.time()
+
+        # HUD'da kalıcı "kilit" bilgisi için — canlı tespitten (detected_targets)
+        # bağımsız, hedef kadrajdan çıksa/tracker kaybolsa bile burada kalır
+        # (2026-08-20, bkz. state.locked_targets, vision.py overlay).
+        state.locked_targets[color] = (target["lat"], target["lon"])
 
         log.info(f"[MISSION] ✓ {color.upper()} hedef konumu kaydedildi: "
               f"({target['lat']:.6f},{target['lon']:.6f}) — "
