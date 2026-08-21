@@ -79,6 +79,13 @@ detected_targets = {"mavi": None, "kirmizi": None}
 # (2026-08-20, bkz. mission.py mission_task — release_points.append noktası).
 locked_targets = {"mavi": None, "kirmizi": None}  # {color: (lat, lon)} | None
 
+# --- Kilit anındaki WP sırası (2026-08-21) ---
+# Hedefin GPS'i kilitlendiği ANDA current_wp["index"]'in bir kopyası — "bu
+# hedef mission'daki kaçıncı WP'ye denk geliyordu" sorusuna HUD'dan cevap
+# vermek için (bkz. mission.py mission_task, vision.py overlay). current_wp
+# gibi sürekli güncellenmez, locked_targets gibi KALICIDIR.
+locked_target_wp = {"mavi": None, "kirmizi": None}  # {color: int} | None
+
 # --- Gönderilen servo (bırakma) komutları — HUD'da "SERVO AÇILDI" bilgisi için ---
 # (2026-08-20, bkz. mission.py _trigger_release).
 servo_events = {"mavi": None, "kirmizi": None}  # {color: {"channel","lat","lon","ts"}} | None

@@ -99,6 +99,21 @@ RED2_HSV_UPPER = np.array([RED2_H_MAX, RED_S_MAX,  RED_V_MAX])
 
 # --- Kare tespiti ---
 SQUARE_CORNER_TOLERANCE = 4
+# 2026-08-21: approxPolyDP epsilon'u (0.02*çevre) çevreyle ORANTILI — yani
+# teoride ölçekten bağımsız. Ama HSV maske sınırındaki piksel-kaynaklı gürültü
+# (±1-2px, morfolojiden sonra bile) ölçekten BAĞIMSIZ SABİT bir miktar; küçük/
+# uzak hedeflerde bu sabit gürültü epsilon'a göre orantısal büyüyor ve gerçek
+# kareyi fazla köşeli/düzensiz gösteriyor. Saha kanıtı (2026-08-20 23:01:26,
+# gerçek uçuş, tespit AKTİF): alan=311 (MIN_AREA sınırında), oran=1.65 (kare
+# aralığında) ama köşe=9 (4 değil) VE doluluk=0.65 (SQUARE_MIN_EXTENT=0.78
+# altında) olduğu için reddedildi — muhtemelen aynı anda kaybolan gerçek hedef,
+# çevresi küçük olduğundan epsilon (~1.4px) piksel gürültüsünü yutamadı. Bu
+# taban, epsilon'u küçük konturlarda yükseltip gürültü kaynaklı sahte köşeleri
+# birleştirir (büyük/uzak konturları etkilemez, zaten epsilon'ları bunun
+# üstünde). NOT: aynı taban küçük altıgen/üçgen tuzak şekillerinin de köşe
+# sayısını düşürebilir — ASPECT_RATIO/SQUARE_MIN_EXTENT hâlâ birincil ayırt
+# edici, sahada DEBUG loglarıyla doğrulanmalı.
+SQUARE_APPROX_MIN_EPSILON_PX = 3.0
 # 2026-08-17: kamera CAMERA_PITCH=45° eğik monteli — yerdeki kare hedef nadir
 # değil, perspektifle "keystone" trapezoide benzer şekilde görünüyor (yakın kenar
 # geniş, uzak kenar dar). Bu, minAreaRect en-boy oranını 1'den saha testlerinde

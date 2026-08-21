@@ -29,7 +29,11 @@ def is_square(contour):
     eklendi).
     """
     perimeter = cv2.arcLength(contour, True)
-    approx    = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+    # bkz. config.py SQUARE_APPROX_MIN_EPSILON_PX notu (2026-08-21) — küçük/uzak
+    # hedeflerde sabit piksel gürültüsü orantılı epsilon'u yutuyor, sahte köşe
+    # üretiyor; taban değer bunu küçük konturlarda telafi eder.
+    epsilon   = max(0.02 * perimeter, config.SQUARE_APPROX_MIN_EPSILON_PX)
+    approx    = cv2.approxPolyDP(contour, epsilon, True)
     if len(approx) != config.SQUARE_CORNER_TOLERANCE:
         return False
     if not cv2.isContourConvex(approx):
@@ -611,27 +615,32 @@ def opencv_processing_thread(queue):
                     col_ok if detected else col_no, 2,
                 )
 
-            # Kilitlenen hedefler (KALICI GPS, 2026-08-20) + gönderilen servo
-            # komutları ("SERVO AÇILDI") — ekranın ALT-SOL köşesinde, SABİT
-            # pozisyonlarda tek blok halinde (üstteki FPS/ALT/POS/WP/FC/RF
-            # bloğuyla ve sağ üstteki MAVI/KIRMIZI OK göstergesiyle çakışmasın
-            # diye; ayrıca satırlar renk bazında SABİT yerde kalsın ki bir
-            # olay gelip geçtikçe diğer satırlar yer değiştirmesin).
+            # Kilitlenen hedefler (KALICI GPS + kilit anındaki WP sırası,
+            # 2026-08-20/21) + gönderilen servo komutları ("SERVO AÇILDI") —
+            # ekranın ALT-SOL köşesinde, SABİT pozisyonlarda tek blok halinde
+            # (üstteki FPS/ALT/POS/WP/FC/RF bloğuyla ve sağ üstteki MAVI/KIRMIZI
+            # OK göstergesiyle çakışmasın diye; ayrıca satırlar renk bazında
+            # SABİT yerde kalsın ki bir olay gelip geçtikçe diğer satırlar yer
+            # değiştirmesin).
             # detected_targets'tan farkı: locked/servo canlı tespitten
             # bağımsız — hedef kadrajdan çıksa/tracker kaybolsa da kalır
-            # (bkz. state.locked_targets/servo_events, mission.py).
+            # (bkz. state.locked_targets/locked_target_wp/servo_events, mission.py).
+            # WP sırası "WP?" gösterir eğer henüz current_wp["index"] set
+            # edilmeden kilitlendiyse (kuramsal, WP takibi mission başında
+            # başlar) — sessizce None basmak yerine bunu görünür kılmak için.
             _hud_slots = (
                 ("mavi",    state.locked_targets["mavi"],
-                 lambda lat, lon: f"MAVI KILIT: {lat:.6f},{lon:.6f}",
+                 lambda lat, lon, wp: f"MAVI KILIT: WP{wp if wp is not None else '?'} {lat:.6f},{lon:.6f}",
                  (255, 100, 0), config.HEIGHT - 140),
                 ("kirmizi", state.locked_targets["kirmizi"],
-                 lambda lat, lon: f"KIRMIZI KILIT: {lat:.6f},{lon:.6f}",
+                 lambda lat, lon, wp: f"KIRMIZI KILIT: WP{wp if wp is not None else '?'} {lat:.6f},{lon:.6f}",
                  (0, 0, 255), config.HEIGHT - 108),
             )
             for color, locked, fmt, box_color, y in _hud_slots:
                 if locked is not None:
                     lat, lon = locked
-                    cv2.putText(stream_frame, fmt(lat, lon), (10, y),
+                    wp_at_lock = state.locked_target_wp[color]
+                    cv2.putText(stream_frame, fmt(lat, lon, wp_at_lock), (10, y),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 2)
 
             for color, y in (("mavi", config.HEIGHT - 70), ("kirmizi", config.HEIGHT - 45)):

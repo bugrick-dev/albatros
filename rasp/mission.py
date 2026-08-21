@@ -599,6 +599,10 @@ async def mission_task(drone, queue):
         # bağımsız, hedef kadrajdan çıksa/tracker kaybolsa bile burada kalır
         # (2026-08-20, bkz. state.locked_targets, vision.py overlay).
         state.locked_targets[color] = (target["lat"], target["lon"])
+        # Kilit anındaki WP sırası da ayrıca saklanır (2026-08-21) — "bu hedef
+        # kaçıncı WP'ye denk geliyordu" HUD'dan görülebilsin diye (bkz.
+        # state.locked_target_wp).
+        state.locked_target_wp[color] = state.current_wp["index"]
 
         log.info(f"[MISSION] ✓ {color.upper()} hedef konumu kaydedildi: "
               f"({target['lat']:.6f},{target['lon']:.6f}) — "
