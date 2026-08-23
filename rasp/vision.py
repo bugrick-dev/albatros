@@ -305,6 +305,24 @@ def opencv_processing_thread(queue):
     # ~2.1Mbps kullanılabilir bant; 2000k video + RTP/FEC yükü bunu aşıp menzil
     # sınırında paket kaybı/donma üretiyordu. maxrate/bufsize de eklendi ki
     # libx264 anlık patlamaları (sahne değişimi) bandın üstüne taşırmasın.
+    #
+    # 2026-08-23: sahada/masada canlı teşhis (wfb_tx.log "packets dropped" +
+    # vision.py _encode_stats) BİTRATE//2 (500Kbit, ~0.5s VBV penceresi)
+    # tavanıyla ~4dk'lık bir testte 9 ayrı yerel-kuyruk paket düşme olayı
+    # görüldü, bunların %78'i (7/9) OpenCV/encode tarafı TAMAMEN temizken
+    # oluyordu (bkz. _encode_stats: yazım normal, düşen=0) — yani kaynak
+    # Python tarafı değil, downstream'de (ffmpeg encode / gst / wfb_tx'in
+    # yerel gönderim kuyruğu) bir tıkanma. FEC (k=4,n=12) burada işe
+    # yaramıyor çünkü kayıp havada değil, gönderim öncesi oluyor.
+    #
+    # DENENDİ VE GERİ ALINDI: "keyframe VBV penceresi çok geniş, x264 bitleri
+    # toplu boşaltıyor" hipoteziyle BITRATE//5'e (200Kbit) daraltıldı — ama
+    # ~2dk'lık A/B testte sonuç İYİLEŞMEDİ, aksine paket kaybı oranı arttı
+    # (500Kbit: 9 olay/255s ≈ 4.4 paket/s; 200Kbit: 6 olay/121s ≈ 6.9 paket/s).
+    # Yani VBV penceresi tek başına kök neden değilmiş — BITRATE//2'ye geri
+    # dönüldü. Sıradaki teşhis adayları: BITRATE'in kendisini düşürmek (gerçek
+    # başlık/RTP/FEC yükü sonrası kullanılabilir ~2.1Mbps'e göre daha fazla
+    # pay bırakmak) ya da wfb_tx'in kendi yerel kuyruk derinliği/parametreleri.
     def _start_encode_chain():
         ffmpeg_encode_cmd = [
             "ffmpeg",
@@ -358,6 +376,20 @@ def opencv_processing_thread(queue):
     # kalıyordu. Artık loglanır ve 5 sn'lik geri çekilmeyle zincir yeniden kurulur.
     _encode_queue = _queue.Queue(maxsize=2)
 
+    # --- Teşhis: kesinti/FPS düşüşü kaynağını ayırt etmek için (2026-08-23) ---
+    # Sahada "kısa süreli çok kesilme" + o sıralarda FPS düşüşü bildirildi, ama
+    # vision.log'daki current_fps sayacı OpenCV'nin İŞLEME hızını ölçüyor —
+    # yayına GERÇEKTEN çıkan kare hızını değil. Bu iki nokta o farkı ortaya
+    # çıkarmak için: "dropped" — encoder'a yetişemeyip _encode_queue.Full ile
+    # SESSİZCE düşürülen kare sayısı (bkz. aşağıdaki put_nowait); "write_max_ms"/
+    # "slow_writes" — stdin.write()'ın normalde ~birkaç ms sürmesi beklenirken
+    # (pipe boşsa) ne kadar geciktiği — downstream (ffmpeg/gst/wfb_tx) tıkanırsa
+    # OS pipe'ı doldurup bu yazımı bloklar, bu da _encode_queue'nun dolup kare
+    # düşürmeye başlamasının asıl nedenidir. Her iki sayaç da 5sn'lik STATUS
+    # penceresiyle hizalı sıfırlanır (bkz. ana döngüdeki debug_timer bloğu).
+    _encode_stats = {"dropped": 0, "write_max_ms": 0.0, "slow_writes": 0, "writes": 0}
+    _SLOW_WRITE_MS = 50.0  # ~1.5 kare periyodu (30fps@33ms) — bunun üstü backpressure sinyali
+
     def _encode_writer():
         last_restart = 0.0
         while not state.shutdown_requested.is_set():
@@ -365,7 +397,14 @@ def opencv_processing_thread(queue):
             if frame_bytes is None:
                 break
             try:
+                t0 = time.monotonic()
                 state.ffmpeg_encode_process.stdin.write(frame_bytes)
+                write_ms = (time.monotonic() - t0) * 1000.0
+                _encode_stats["writes"] += 1
+                if write_ms > _encode_stats["write_max_ms"]:
+                    _encode_stats["write_max_ms"] = write_ms
+                if write_ms > _SLOW_WRITE_MS:
+                    _encode_stats["slow_writes"] += 1
             except Exception as e:
                 proc = state.ffmpeg_encode_process
                 dead = proc is None or proc.poll() is not None
@@ -379,6 +418,27 @@ def opencv_processing_thread(queue):
                         log.info(f"[VISION] Encode zinciri yeniden kurulamadı: {e2}")
 
     threading.Thread(target=_encode_writer, daemon=True).start()
+
+    # hud_preview.jpg yazımı da ayrı thread'e alındı (2026-08-23) — eskiden
+    # ana işleme döngüsünde SENKRON cv2.imwrite() olarak çalışıyordu; disk I/O
+    # (JPEG encode + SD/SSD yazma) beklenmedik şekilde uzayabilir ve bu süre
+    # boyunca frame okuma/tespit döngüsünün TAMAMI bloklanıyordu (canlı teşhiste
+    # bir örnekte ~5s'lik pencerede yazım sayısı 151'den 38'e düştüğü gözlendi
+    # — bkz. _encode_stats notu). maxsize=1: önceki yazım hâlâ sürüyorsa yeni
+    # kareyi düş, zaten 5sn'de bir tazeleniyor, kaçırılan bir tanesinin önemi yok.
+    _hud_preview_queue = _queue.Queue(maxsize=1)
+
+    def _hud_preview_writer():
+        while not state.shutdown_requested.is_set():
+            preview_frame = _hud_preview_queue.get()
+            if preview_frame is None:
+                break
+            try:
+                cv2.imwrite("/home/albatros/logs/hud_preview.jpg", preview_frame)
+            except Exception:
+                pass
+
+    threading.Thread(target=_hud_preview_writer, daemon=True).start()
 
     # Raw YUV420 (I420 planar): width*height*1.5 byte/kare — eski BGR decode
     # çıktısının (width*height*3) yarısı, ayrıca kaynakta bir codec turu eksik.
@@ -435,6 +495,7 @@ def opencv_processing_thread(queue):
     fps_time      = time.time()
     current_fps   = 0
     debug_timer   = time.time()
+    _detection_done_logged = False  # bkz. aşağıdaki "iki hedef de kilitlendi" gating notu — tek seferlik log için
 
     # Kalibrasyon varsa distorsiyon düzeltme haritası BİR KEZ hesaplanır (her
     # frame'de cv2.undistort çağırmak yerine cv2.remap kullanmak için — çok
@@ -517,23 +578,60 @@ def opencv_processing_thread(queue):
                              f"(pos={tel['pos_age_s']*1000:.0f}ms att={tel['att_age_s']*1000:.0f}ms)")
                     last_staleness_warn = now
 
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            # 2026-08-23: HSV dönüşümü + maske/kontur/MOSSE hesabının TAMAMI
+            # yalnızca tespit AKTİFKEN (DETECTION_ACTIVE_WP'den itibaren) VE
+            # henüz iki hedef de kilitlenmemişken yapılır. ESKİDEN açılıştan
+            # itibaren HER karede tam maliyetle çalışıyordu — GPS kilidi zaten
+            # yalnızca detection_active iken VE hedef henüz kilitlenmemişken
+            # hesaplanıyordu (bkz. _update_detection içindeki aynı kontroller),
+            # yani hem WP6 öncesi transit/tırmanışta hem de iki hedef bulunup
+            # mission_task arama döngüsünden çıktıktan SONRA (drop noktalarına
+            # yaklaşma/iniş bacağı boyunca) bu iş SONUCU zaten hiç
+            # kullanılmıyordu, sadece CPU (dolayısıyla güç) boşa harcanıyordu.
+            # NOT: servo'nun fiilen ateşlenmesi (state.servo_events) DEĞİL,
+            # queued_colors'ın 2'ye ulaşması tetikleyici — mission_task iki
+            # hedef kilitlenir kilitlenmez arama döngüsünden çıkıp drop
+            # misyonuna geçiyor (bkz. mission.py mission_task), o andan
+            # itibaren vision'dan artık HİÇBİR ŞEY beklenmiyor; servo ateşi
+            # kilitlenmeden çok sonra (yaklaşma bacağı sonunda) olabileceği
+            # için onu beklemek gereksiz CPU harcardı.
+            # Gating GECİKME RİSKİ TAŞIMAZ: kamera/encode zinciri bu
+            # bayraklardan bağımsız zaten sürekli akıyor, koşul sağlandığı AN
+            # bir sonraki karede tam maliyetli tespit devreye girer (ısınma/
+            # başlatma yok — bkz. WP6 gating'i eklerken yapılan aynı analiz).
+            # Undistort (cv2.remap, yukarıda) KASITLI olarak gate'lenmedi —
+            # yayına giden görüntünün geometrisini tespit fazından bağımsız
+            # tutarlı tutmak için (hakem görüntüsü), zaten "ucuz" bir işlem.
+            if state.detection_active.is_set() and len(queued_colors) < 2:
+                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-            # Mavi kare tespiti
-            mask_blue = _apply_morph(cv2.inRange(hsv, config.BLUE_HSV_LOWER, config.BLUE_HSV_UPPER))
-            _update_detection(mask_blue, "mavi", queue, queued_colors, tel, tracking, frame, trackers)
+                # Mavi kare tespiti
+                mask_blue = _apply_morph(cv2.inRange(hsv, config.BLUE_HSV_LOWER, config.BLUE_HSV_UPPER))
+                _update_detection(mask_blue, "mavi", queue, queued_colors, tel, tracking, frame, trackers)
 
-            # Kırmızı kare tespiti (iki HSV aralığı OR'lanır)
-            mask_red = _apply_morph(cv2.bitwise_or(
-                cv2.inRange(hsv, config.RED1_HSV_LOWER, config.RED1_HSV_UPPER),
-                cv2.inRange(hsv, config.RED2_HSV_LOWER, config.RED2_HSV_UPPER),
-            ))
-            _update_detection(mask_red, "kirmizi", queue, queued_colors, tel, tracking, frame, trackers)
+                # Kırmızı kare tespiti (iki HSV aralığı OR'lanır)
+                mask_red = _apply_morph(cv2.bitwise_or(
+                    cv2.inRange(hsv, config.RED1_HSV_LOWER, config.RED1_HSV_UPPER),
+                    cv2.inRange(hsv, config.RED2_HSV_LOWER, config.RED2_HSV_UPPER),
+                ))
+                _update_detection(mask_red, "kirmizi", queue, queued_colors, tel, tracking, frame, trackers)
 
-            for _color in ("mavi", "kirmizi"):
-                _t = tracking[_color]
-                if _t is not None:
-                    gps_data[_color] = (_t["lat"], _t["lon"])
+                for _color in ("mavi", "kirmizi"):
+                    _t = tracking[_color]
+                    if _t is not None:
+                        gps_data[_color] = (_t["lat"], _t["lon"])
+            else:
+                mask_blue = mask_red = None
+                if len(queued_colors) >= 2 and not _detection_done_logged:
+                    _detection_done_logged = True
+                    # Artık "canlı" bir tespit karesi yok — donmuş/eski bir
+                    # kutu HUD'da asılı kalmasın diye temizleniyor (kalıcı
+                    # KİLİT/SERVO bilgisi ayrı state'lerde, bkz. aşağıdaki
+                    # overlay — bundan ETKİLENMEZ, hep görünür kalır).
+                    state.detected_targets["mavi"] = None
+                    state.detected_targets["kirmizi"] = None
+                    log.info("[VISION] ✓ İki hedef de kilitlendi — tespit hesaplaması durduruldu, "
+                             "yalnızca video yayını devam ediyor")
 
             # Tespit (yukarıda) hep native frame'de yapıldı — kalibrasyon ve
             # geo.py matematiği için gerekli. Overlay'in TAMAMI ise (kontur +
@@ -658,14 +756,14 @@ def opencv_processing_thread(queue):
             try:
                 _encode_queue.put_nowait(stream_frame.tobytes())
             except _queue.Full:
-                pass  # encoder meşgul, bu frame'i düş
+                _encode_stats["dropped"] += 1  # encoder meşgul, bu frame'i düş
 
             # Periyodik durum özeti (her 5 saniyede bir)
             if now - debug_timer >= 5.0:
                 try:
-                    cv2.imwrite("/home/albatros/logs/hud_preview.jpg", stream_frame)
-                except Exception:
-                    pass
+                    _hud_preview_queue.put_nowait(stream_frame)
+                except _queue.Full:
+                    pass  # önceki yazım hâlâ sürüyor, bu tazelemeyi düş
                 mavi_str = (
                     f"({state.detected_targets['mavi']['cx']},{state.detected_targets['mavi']['cy']})"
                     if state.detected_targets["mavi"] else "—"
@@ -674,14 +772,40 @@ def opencv_processing_thread(queue):
                     f"({state.detected_targets['kirmizi']['cx']},{state.detected_targets['kirmizi']['cy']})"
                     if state.detected_targets["kirmizi"] else "—"
                 )
-                detection_str = "AKTİF" if state.detection_active.is_set() else "BEKLİYOR"
+                if len(queued_colors) >= 2:
+                    detection_str = "TAMAMLANDI"
+                elif state.detection_active.is_set():
+                    detection_str = "AKTİF"
+                else:
+                    detection_str = "BEKLİYOR"
                 log.info(f"[VISION][STATUS] FPS={current_fps} | "
                       f"mavi={mavi_str} kirmizi={kirmizi_str} | "
                       f"tespit={detection_str} | kuyruk={queue.qsize()}")
+                # Encode/yayın teşhis satırı — bkz. yukarıdaki _encode_stats notu.
+                # dropped>0: OpenCV encoder'a yetişemedi (kare hiç yayına gitmedi).
+                # write_max_ms yüksek/slow_writes>0: downstream (ffmpeg/gst/wfb_tx)
+                # tıkanmış, stdin.write() pipe dolduğu için bekliyor demektir.
+                log.info(f"[VISION][STATUS] Encode: yazım={_encode_stats['writes']} "
+                      f"düşen={_encode_stats['dropped']} "
+                      f"en-yavaş-yazım={_encode_stats['write_max_ms']:.0f}ms "
+                      f"yavaş-yazım-sayısı={_encode_stats['slow_writes']} "
+                      f"(son {int(now - debug_timer)}s pencere)")
+                _encode_stats["dropped"] = 0
+                _encode_stats["write_max_ms"] = 0.0
+                _encode_stats["slow_writes"] = 0
+                _encode_stats["writes"] = 0
 
                 # Tanı: tespit edilemeyen renkler için RENK mi ŞEKİL mi sorunu ayır
+                # (yalnızca tespit aktifken — kapalıyken mask_blue/mask_red None,
+                # zaten teşhis edilecek bir şey yok, bkz. yukarıdaki gating notu)
+                if mask_blue is None and mask_red is None:
+                    if len(queued_colors) >= 2:
+                        log.info("[VISION][DEBUG] iki hedef de kilitlendi — maske teşhisi atlandı, "
+                                 "yalnızca video yayını devam ediyor")
+                    else:
+                        log.info("[VISION][DEBUG] tespit henüz aktif değil (WP beklemede) — maske teşhisi atlandı")
                 for _color, _mask in (("mavi", mask_blue), ("kirmizi", mask_red)):
-                    if state.detected_targets[_color]:
+                    if _mask is None or state.detected_targets[_color]:
                         continue
                     info = _mask_debug_info(_mask)
                     if info["candidate"] is None:

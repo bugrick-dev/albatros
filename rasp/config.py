@@ -12,7 +12,12 @@ import numpy as np
 WIDTH  = 640
 HEIGHT = 480
 FPS    = 30
-BITRATE = 1000000  # WFB FEC yedekliliğiyle (bkz. WFB_FEC_*) uyumlu düşürüldü
+# 2026-08-23: 1000000 (1Mbps) canlı teşhiste hâlâ sık yerel-kuyruk paket
+# kaybına yol açıyordu (wfb_tx.log "packets dropped", ~4-7 paket/s, OpenCV/
+# encode tarafı temizken bile) — bufsize daraltma denendi, İYİLEŞTİRMEDİ
+# (bkz. vision.py _start_encode_chain notu). Sıradaki A/B adımı: bitrate'in
+# kendisini düşürüp gerçek payı (2.1Mbps kullanılabilir bant altında) artırmak.
+BITRATE = 600000  # WFB FEC yedekliliğiyle (bkz. WFB_FEC_*) uyumlu düşürüldü
 INTRA   = 15        # paket kaybı sonrası hızlı toparlanma için sık keyframe
 
 # Kamera fiziksel olarak ters monte (kablo yukarı çıkacak şekilde). NOT:
@@ -150,6 +155,14 @@ WFB_FEC_N          = 12     # 3x FEC yedekliliği — sahada ölçülüp doğrul
 # underflow) gözlendi; rtw_smart_ps=0 (bkz. /etc/modprobe.d/88x2bu.conf) ile
 # birlikte 3000'de 23+ dk kesintisiz test edildi (2026-08-16). Menzil kaybı
 # ~yok denecek kadar az (31→30 dBm, ~1dB).
+#
+# 2026-08-23: 3100 geçici test edildi (bitrate 1Mbps→600Kbps sonrası A/B) —
+# iki ayrı ~9-10dk'lık run'da USB disconnect HİÇ görülmedi (eski sorun bir
+# daha tetiklenmedi), ama wfb_tx yerel-kuyruk paket kaybı run'lar arası çok
+# değişken çıktı (0 paket/s ile ~2-5 paket/s arası, statik sahnede bile) —
+# net bir kazanç kanıtlanamadı, üstelik run2 3000'deki en kötü sonuçtan daha
+# kötüydü. Kanıtlanmış 23+ dk'lık 3000 kaydına karşı riske değecek bir fayda
+# yok → 3000'e geri alındı.
 WFB_TXPOWER_MBM    = 3000
 
 # --- Port numaraları ---
