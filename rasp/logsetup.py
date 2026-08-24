@@ -8,7 +8,7 @@ import logging
 import time
 
 LOG_DIR = "/home/albatros/logs"
-MODULES = ["main", "pipeline", "vision", "mission", "geo"]
+MODULES = ["main", "pipeline", "vision", "mission", "geo", "heartbeat"]
 
 # 2026-08-23: FLUSH_INTERVAL_SEC — bkz. BufferedFileHandler notu.
 FLUSH_INTERVAL_SEC = 1.0

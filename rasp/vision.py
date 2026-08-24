@@ -758,6 +758,12 @@ def opencv_processing_thread(queue):
             except _queue.Full:
                 _encode_stats["dropped"] += 1  # encoder meşgul, bu frame'i düş
 
+            # Donanım heartbeat LED'i için canlılık damgası (bkz. heartbeat.py)
+            # — bir kare işleme turu TAM olarak buraya kadar sorunsuz
+            # tamamlandığında güncellenir, döngünün herhangi bir yerinde
+            # (undistort/tespit/overlay/encode) takılırsa damga bayatlar.
+            state.last_vision_tick = time.monotonic()
+
             # Periyodik durum özeti (her 5 saniyede bir)
             if now - debug_timer >= 5.0:
                 try:

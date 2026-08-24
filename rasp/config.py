@@ -165,6 +165,18 @@ WFB_FEC_N          = 12     # 3x FEC yedekliliği — sahada ölçülüp doğrul
 # yok → 3000'e geri alındı.
 WFB_TXPOWER_MBM    = 3000
 
+# --- Donanım heartbeat LED'i (2026-08-23, bkz. heartbeat.py) ---
+# Fiziksel 40-pinli header: pin 40 = GPIO21 (BCM), pin 39 = GND (hemen
+# yanında) — LED anot (+ uygun sınırlayıcı direnç) GPIO21'e, katot pin 39
+# GND'ye. Servo/kamera bu pini kullanmıyor (servo FC üzerinden/AUX kanalları,
+# kamera CSI hattı — GPIO'ya hiç dokunmuyorlar), çakışma riski yok.
+HEARTBEAT_LED_GPIO = 21
+# vision döngüsü bu süreden daha uzun süredir tık atmadıysa (donmuş sayılır)
+# LED söner — DETECTION_LOST_STREAK gibi kısa görsel kesintilerle (kare
+# kaybı, motion blur) karışmasın diye kare süresinin (33ms) çok üzerinde,
+# ama gerçek bir donmayı da makul sürede yakalayacak bir eşik seçildi.
+HEARTBEAT_STALE_SEC = 3.0
+
 # --- Port numaraları ---
 # (RPICAM_TCP_PORT/FFMPEG_UDP_PORT kaldırıldı — TCP+decode pipeline'ı ile
 # birlikte öldüler, bkz. pipeline.py raw stdout notu. NOT: pigpiod hâlâ

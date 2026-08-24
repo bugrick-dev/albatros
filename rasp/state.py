@@ -108,3 +108,14 @@ ffmpeg_encode_process = None
 
 # --- Kapanis sinyali (thread'lerin duzgun sonlanmasi icin) ---
 shutdown_requested = threading.Event()
+
+# --- Donanım heartbeat LED'i için "canlılık" damgası (2026-08-23) ---
+# vision.py ana işleme döngüsü HER turda time.monotonic() ile günceller.
+# heartbeat.py'deki gözcü thread bu değerin ne kadar bayatladığını kontrol
+# edip LED'i buna göre yanıp söndürür/söndürür — uçağın içine fiziksel erişim
+# kısıtlı olduğu için dıştan görülebilir bir "sistem donmadı" göstergesi
+# (bkz. heartbeat.py). Kasıtlı olarak sadece vision döngüsünü izliyor (mission/
+# FC bağlantısından bağımsız) — video/tespit zaten uçuşun en kritik sürekli
+# çalışması gereken parçası, kernel'in kendi ACT LED/heartbeat trigger'ından
+# farklı olarak Python tarafının GERÇEKTEN ilerlediğini kanıtlıyor.
+last_vision_tick = None

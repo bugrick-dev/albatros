@@ -26,6 +26,7 @@ import state
 import pipeline
 import vision
 import mission
+import heartbeat
 import logsetup
 
 log = logging.getLogger("main")
@@ -76,6 +77,13 @@ async def run():
     )
     opencv_thread.start()
     log.info(f"[MAIN] OpenCV thread başladı (TID={opencv_thread.ident})")
+
+    # Donanım heartbeat LED'i (2026-08-23) — uçağın içine fiziksel erişim
+    # kısıtlı olduğu için vision döngüsünün donmadığını dıştan görülebilir
+    # kılar (bkz. heartbeat.py, config.HEARTBEAT_LED_GPIO). GPIO/LED donanımı
+    # yoksa/hatalıysa kendi içinde sessizce devre dışı kalır, uçuş yazılımını
+    # ETKİLEMEZ — bu yüzden başarısızlığı burada ayrıca sarmalamaya gerek yok.
+    heartbeat.start()
 
     # 5. MAVSDK bağlantısı — FC bulunana kadar FAILSAFE ile SÜRESİZ dener.
     # NOT (2026-08-20 kök neden): drone.connect()'in KENDİSİ bazen hiç
