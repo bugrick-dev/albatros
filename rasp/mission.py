@@ -506,13 +506,22 @@ async def waypoint_tracking_task(drone):
 # ==================== TESPİT AKTİVASYONU ====================
 
 async def detection_activation_task(drone):
-    """DETECTION_ACTIVE_WP'ye gelince tespiti aktif eder."""
-    log.info(f"[DETECTION] Tespit aktivasyonu bekleniyor — WP {config.DETECTION_ACTIVE_WP}'de aktif olacak")
+    """Tespiti YALNIZCA DETECTION_ACTIVE_WP..SEARCH_LOOP_EXIT_WP aralığında aktif tutar.
+    2026-08-24: eskiden DETECTION_ACTIVE_WP'ye ulaşınca bir kere set edilip task
+    sonlanıyordu — tarama bacağı bittikten (SEARCH_LOOP_EXIT_WP) sonra, yaklaşma/
+    iniş bacağı boyunca da AKTİF kalmaya devam ediyordu. Böylece uçak kendi
+    bulduğu (transit/tırmanış veya iniş sekansındaki) sahte hedefleri de kabul
+    edebiliyordu. Artık aralığın DIŞINA çıkınca bayrak PASİFE çekilir."""
+    log.info(f"[DETECTION] Tespit aktivasyonu bekleniyor — WP "
+             f"{config.DETECTION_ACTIVE_WP}-{config.SEARCH_LOOP_EXIT_WP} aralığında aktif olacak")
     async for progress in drone.mission_raw.mission_progress():
-        if progress.current >= config.DETECTION_ACTIVE_WP:
+        in_range = config.DETECTION_ACTIVE_WP <= progress.current < config.SEARCH_LOOP_EXIT_WP
+        if in_range and not state.detection_active.is_set():
             state.detection_active.set()
             log.info(f"[DETECTION] ✓ Tespit AKTİF — WP {progress.current}")
-            break
+        elif not in_range and state.detection_active.is_set():
+            state.detection_active.clear()
+            log.info(f"[DETECTION] ✗ Tespit PASİF — WP {progress.current} (tarama aralığı dışı)")
 
 
 # ==================== ANA GÖREV ====================

@@ -391,9 +391,9 @@ FC_RECONNECT_INTERVAL_SEC  = 3    # Bağlantı kurulamadığında/koptuğunda (�
 # --- Tarama / drop WP yönetimi ---
 # NOT (2026-08-20): hız yönetimi (DO_CHANGE_SPEED) koddan tamamen kaldırıldı
 # — uçak kendi (GCS/FC'de ayarlı) hızında uçar, kod tarafı yalnızca WP koyar.
-SEARCH_START_WP     = 6      # Bu WP'ye gelince tarama moduna geç (GCS planına göre ayarla)
-DETECTION_ACTIVE_WP = 6      # Bu WP'ye gelince tespit aktif olur (GCS planına göre ayarla)
-SEARCH_LOOP_EXIT_WP = 20     # Bu index'ten itibaren olan öğeler "iniş sekansı" sayılır ve yeni drop
+SEARCH_START_WP     = 20     # Bu WP'ye gelince tarama moduna geç (GCS planına göre ayarla)
+DETECTION_ACTIVE_WP = 20     # Bu WP'ye gelince tespit aktif olur (GCS planına göre ayarla)
+SEARCH_LOOP_EXIT_WP = 40     # Bu index'ten itibaren olan öğeler "iniş sekansı" sayılır ve yeni drop
                               # misyonuna olduğu gibi eklenir (bkz. mission.build_and_start_drop_mission).
                               # 2026-08-19: GCS planı artık DO_JUMP KULLANMIYOR (tarama döngüsü farklı
                               # şekilde kuruldu) — mission.py'deki DO_JUMP koruması (iniş sekansında
