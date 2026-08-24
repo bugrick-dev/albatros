@@ -17,7 +17,9 @@ FPS    = 30
 # encode tarafı temizken bile) — bufsize daraltma denendi, İYİLEŞTİRMEDİ
 # (bkz. vision.py _start_encode_chain notu). Sıradaki A/B adımı: bitrate'in
 # kendisini düşürüp gerçek payı (2.1Mbps kullanılabilir bant altında) artırmak.
-BITRATE = 600000  # WFB FEC yedekliliğiyle (bkz. WFB_FEC_*) uyumlu düşürüldü
+BITRATE = 800000  # 2026-08-24: 600k'dan kademeli A/B artışı (1. adım) — kalite
+                  # artırımı denemesi, wfb_tx.log'da yeni kayıp olup olmadığı
+                  # izlenerek yapılıyor. Sorun çıkarsa 600000'e geri alınabilir.
 INTRA   = 15        # paket kaybı sonrası hızlı toparlanma için sık keyframe
 
 # Kamera fiziksel olarak ters monte (kablo yukarı çıkacak şekilde). NOT:
