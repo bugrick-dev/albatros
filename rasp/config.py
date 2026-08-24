@@ -249,6 +249,18 @@ MAX_PITCH_FOR_DETECTION_DEG = 15.0
 # kombinasyonlarıyla yeniden doğrulanmalı, gerekirse ayarlanmalı.
 MAX_DETECTION_DISTANCE_M = 200.0
 
+# --- Tespit alanı jeofansı (bkz. geo.point_in_polygon) ---
+# Hesaplanan hedef GPS'i bu poligonun (4 köşe, sırayla) DIŞINDA kalırsa
+# tespit REDDEDİLİR — 2026-08-24: yarışma alanı dışında (örn. seyirci/pist
+# tarafı) yanlışlıkla "hedef" sanılan bir şeklin GPS kilidine girmesini
+# engellemek için eklendi. Köşeler (lat, lon) sırayla:
+GEOFENCE_POLYGON = [
+    (41.2439218, 29.0151072),
+    (41.2429250, 29.0153164),
+    (41.2428645, 29.0162337),
+    (41.2439132, 29.0162498),
+]
+
 # --- Hedef izleme: en-yakın-nokta kilidi (bkz. vision._update_detection) ---
 # 45° açılı montaj KORUNUYOR (erken tespit/orbit planlama için gerekli,
 # 2026-08-12 tartışması) — ama artık GPS kilidi hedefin İLK görüldüğü

@@ -58,6 +58,28 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * 2 * math.asin(math.sqrt(a))
 
 
+def point_in_polygon(lat, lon, polygon):
+    """Ray-casting: (lat, lon) polygon (lat,lon köşe listesi) içinde mi?
+
+    Alan küçük (birkaç yüz metre) olduğu için lat/lon düzlemsel kabul
+    edilip doğrudan üzerinde çalışılıyor — enlem/boylam ölçek farkı
+    (cos(lat) çarpanı) bu ölçekte içeride/dışarıda kararını değiştirecek
+    kadar önemli değil, ray-casting yalnızca kesişim SAYISINA bakıyor.
+    """
+    n = len(polygon)
+    inside = False
+    x, y = lon, lat
+    x1, y1 = polygon[0][1], polygon[0][0]
+    for i in range(1, n + 1):
+        x2, y2 = polygon[i % n][1], polygon[i % n][0]
+        if y > min(y1, y2) and y <= max(y1, y2) and x <= max(x1, x2) and y1 != y2:
+            x_intersect = (y - y1) * (x2 - x1) / (y2 - y1) + x1
+            if x1 == x2 or x <= x_intersect:
+                inside = not inside
+        x1, y1 = x2, y2
+    return inside
+
+
 def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target_cx, target_cy):
     """
     Kamera frame piksel koordinatlarını GPS koordinatına dönüştürür.
@@ -166,6 +188,11 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     target_lat = drone_lat + (delta_north / 111320)
     target_lon = drone_lon + (delta_east  / (111320 * math.cos(math.radians(drone_lat))))
     log.debug(f"[GEO][pixel_to_gps] Sonuç: hedef GPS=({target_lat:.6f}, {target_lon:.6f})")
+
+    if config.GEOFENCE_POLYGON and not point_in_polygon(target_lat, target_lon, config.GEOFENCE_POLYGON):
+        log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: hedef GPS=({target_lat:.6f}, {target_lon:.6f}) "
+                 f"GEOFENCE_POLYGON dışında — tespit atlanıyor")
+        return None
 
     return target_lat, target_lon
 
