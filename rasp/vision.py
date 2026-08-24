@@ -334,6 +334,19 @@ def opencv_processing_thread(queue):
             "-pix_fmt", "yuv420p", "-profile:v", "baseline",
             "-b:v", str(config.BITRATE), "-maxrate", str(config.BITRATE),
             "-bufsize", str(config.BITRATE // 2), "-g", str(config.INTRA),
+            # 2026-08-24: periyodik TAM I-frame yerine sürekli/kayan intra-
+            # refresh (x264 "intra refresh" özelliği) — her kare, görüntünün
+            # küçük bir dilimini yeniler (tam kare değil). Böylece:
+            #  1) Büyük I-frame patlaması yok → bitrate akışı çok daha DÜZ
+            #     (VBV/bufsize taşması ve dolayısıyla yerel-kuyruk paket kaybı
+            #     riski azalır — bkz. yukarıdaki "500Kbit'te 9 kuyruk düşmesi"
+            #     teşhisi, kaynağı RF değil bu tür ani yük patlamalarıydı).
+            #  2) Paket kaybından toparlanma tek bir I-frame'i (ve o karenin
+            #     KENDİSİNİN de sağlam ulaşmasını) beklemek yerine SÜREKLİ/
+            #     kademeli olur — kayıp sonrası bozukluk daha hızlı temizlenir.
+            # -g burada "refresh period" (kaç karede bir tam döngü tamamlanır)
+            # anlamına geliyor, klasik GOP değil.
+            "-intra-refresh", "1",
             "-flush_packets", "1",
             "-f", "h264", "-",
         ]
