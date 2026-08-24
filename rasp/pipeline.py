@@ -12,14 +12,13 @@ WFB_TX_LOG_PATH = "/home/albatros/logs/wfb_tx.log"
 RPICAM_LOG_PATH = "/home/albatros/logs/rpicam.log"
 
 
-def _find_iface_by_mac():
-    """Tek seferlik 'ip link' taraması; bulamazsa None döner."""
+def _find_iface_by_mac(mac):
+    """Tek seferlik 'ip link' taraması, tek bir MAC için; bulamazsa None döner."""
     result = subprocess.run(["ip", "link"], capture_output=True, text=True)
-    log.info(f"[PIPELINE] 'ip link' çıktısı ({len(result.stdout)} karakter)")
     lines = result.stdout.splitlines()
 
     for i, line in enumerate(lines):
-        if config.WFB_MAC.lower() in line.lower():
+        if mac.lower() in line.lower():
             log.info(f"[PIPELINE] MAC satırı bulundu (indeks {i}): {line.strip()}")
             prev  = lines[i - 1] if i > 0 else ""
             parts = prev.split(": ")
@@ -27,6 +26,19 @@ def _find_iface_by_mac():
                 iface = parts[1].split("@")[0].strip()
                 log.info(f"[PIPELINE] Önceki satır: {prev.strip()} → arayüz={iface}")
                 return iface
+    return None
+
+
+def _find_iface_by_any_mac():
+    """WFB_MAC_CANDIDATES listesini sırayla dener (birincil anten, sonra yedek
+    — bkz. config.py notu) — hangisi TAKILIYSA onu döner. Bulamazsa None."""
+    for mac in config.WFB_MAC_CANDIDATES:
+        iface = _find_iface_by_mac(mac)
+        if iface:
+            if mac != config.WFB_MAC:
+                log.info(f"[PIPELINE] ⚠ Birincil anten (MAC={config.WFB_MAC}) bulunamadı, "
+                         f"YEDEK anten kullanılıyor (MAC={mac})")
+            return iface
     return None
 
 
@@ -65,7 +77,7 @@ def setup_monitor_mode(retry_timeout=20, retry_interval=1.0):
     verip surecı sonlandırmaz — None doner, cagiran taraf (start_pipeline)
     aramayi arka planda sinirsiz surdurur (bkz. _wfb_startup_retry_loop).
     """
-    log.info(f"[PIPELINE] WiFi arayüzü aranıyor (MAC={config.WFB_MAC})...")
+    log.info(f"[PIPELINE] WiFi arayüzü aranıyor (MAC adayları={config.WFB_MAC_CANDIDATES})...")
 
     try:
         iface = None
@@ -73,15 +85,15 @@ def setup_monitor_mode(retry_timeout=20, retry_interval=1.0):
         attempt = 0
         while time.time() - start < retry_timeout:
             attempt += 1
-            iface = _find_iface_by_mac()
+            iface = _find_iface_by_any_mac()
             if iface:
                 break
-            log.info(f"[PIPELINE] MAC {config.WFB_MAC} bulunamadı (deneme {attempt}), "
+            log.info(f"[PIPELINE] MAC adaylarından hiçbiri bulunamadı (deneme {attempt}), "
                   f"{retry_interval}s sonra tekrar denenecek...")
             time.sleep(retry_interval)
 
         if not iface:
-            log.info(f"[PIPELINE] MAC {config.WFB_MAC} {retry_timeout}s içinde hiçbir satırda "
+            log.info(f"[PIPELINE] MAC adaylarından hiçbiri {retry_timeout}s içinde "
                      f"bulunamadı — arka planda aranmaya devam edilecek")
             return None
 
@@ -144,11 +156,12 @@ def _wfb_startup_retry_loop(retry_interval=3.0):
     bu döngüyü BEKLEMEZ, dongle yokken de çalışmaya devam eder — eskiden
     dongle bulunamayınca tüm süreç exit(1) ile kapanıp systemd'yi 3sn'de bir
     crash-loop'a sokuyordu (2026-08-19, sahada tekrarlanan restart sorunu)."""
-    log.info(f"[PIPELINE] WFB dongle arka planda aranmaya devam ediyor (MAC={config.WFB_MAC})...")
+    log.info(f"[PIPELINE] WFB dongle arka planda aranmaya devam ediyor "
+             f"(MAC adayları={config.WFB_MAC_CANDIDATES})...")
     attempt = 0
     while not state.shutdown_requested.is_set():
         attempt += 1
-        iface = _find_iface_by_mac()
+        iface = _find_iface_by_any_mac()
         if iface:
             log.info(f"[PIPELINE] ✓ WFB dongle bulundu (deneme {attempt}) → {iface}")
             _arm_monitor_mode(iface)

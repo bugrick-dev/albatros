@@ -46,7 +46,7 @@ async def run():
         log.info(f"  Kamera  : ⚠ KALİBRASYON YOK — FOV tahmini ({config.CAMERA_FOV_H}°/{config.CAMERA_FOV_V}°) kullanılıyor, "
                   f"GPS hesabı hatalı olabilir! bkz. tools/camera_calibrate.py")
     log.info(f"  FC      : {config.FC_PORT} @ {config.FC_BAUDRATE}baud")
-    log.info(f"  WFB     : MAC={config.WFB_MAC}  kanal={config.WFB_CHANNEL}")
+    log.info(f"  WFB     : MAC adayları={config.WFB_MAC_CANDIDATES}  kanal={config.WFB_CHANNEL}")
     log.info(f"  Tarama  : WP {config.SEARCH_START_WP} (hız yönetimi YOK — kendi hızında) | "
           f"loop çıkış WP={config.SEARCH_LOOP_EXIT_WP}")
     log.info(f"  Drop    : kurma={config.DROP_TRIGGER_RADIUS_M}m "

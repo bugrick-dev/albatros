@@ -138,7 +138,13 @@ ASPECT_RATIO_MAX = 1.7
 SQUARE_MIN_EXTENT = 0.78
 
 # --- WFB-ng ---
-WFB_MAC      = "6c:4c:bc:0a:62:a0"
+# Birincil anten. 2026-08-24: yedek anten (aynı marka/model, TP-Link 802.11ac
+# NIC) eklendi — WFB_MAC_CANDIDATES sırayla denenir, hangisi TAKILIYSA o
+# kullanılır (pipeline._find_iface_by_any_mac), tekli anten arızasında/
+# değişiminde kod değişikliği gerekmez.
+WFB_MAC          = "6c:4c:bc:0a:62:a0"
+WFB_MAC_BACKUP   = "58:04:4f:6c:8e:ee"
+WFB_MAC_CANDIDATES = [WFB_MAC, WFB_MAC_BACKUP]
 WFB_KEY_PATH = "/home/albatros/gs.key"
 WFB_LINK_ID  = "7669206"
 WFB_CHANNEL  = 157   # UNII-3, daha az yoğun — kart 88x2bu.conf'ta rtw_regd_src=1/rtw_country_code=US
