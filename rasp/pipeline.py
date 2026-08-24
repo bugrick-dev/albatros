@@ -108,8 +108,18 @@ def setup_monitor_mode(retry_timeout=20, retry_interval=1.0):
 
 
 def _wfb_cmd_str(iface):
+    # 2026-08-24: "chrt -f 10" ile wfb_tx'e SCHED_FIFO gerçek-zamanlı öncelik
+    # veriliyor (mütevazı bir değer — RT 10, çoğu kernel iş parçacığının
+    # altında kalır, kritik sistem işlerini aç bırakmaz). Sahada gözlenen
+    # "görüntü kompleksleştikçe yerel-kuyruk paket kaybı artıyor" bulgusuyla
+    # örtüşen bir hipotezi test ediyor: wfb_tx normalde SCHED_OTHER'da,
+    # Python (mission+vision+OpenCV) ile aynı 4 çekirdekte yarışıyor — sahne
+    # karmaşıklaştıkça encode/tespit CPU yükü artıp wfb_tx'in zamanlanmasını
+    # geciktirebiliyor, RF enjeksiyonu birkaç saniyeliğine takılıp yerel
+    # kuyruk taşıyor (bkz. wfb_tx.log çapraz doğrulaması, aynı tarihli not).
+    # A/B ile doğrulanacak — işe yaramazsa geri alınabilir.
     return (
-        f"sudo wfb_tx -K {config.WFB_KEY_PATH} "
+        f"sudo chrt -f 10 wfb_tx -K {config.WFB_KEY_PATH} "
         f"-i {config.WFB_LINK_ID} -p 0 -u {config.WFB_UDP_PORT} "
         f"-M {config.WFB_MCS} -B {config.WFB_BANDWIDTH} -G {config.WFB_GUARD_INTERVAL} "
         f"-L {config.WFB_LDPC} -k {config.WFB_FEC_K} -n {config.WFB_FEC_N} {iface}"
