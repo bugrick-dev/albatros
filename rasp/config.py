@@ -231,13 +231,13 @@ CAMERA_PITCH = 45.0
 # eklenmez) — yüksek bank açısında piksel->GPS projeksiyonu ufka yaklaşıp
 # aşırı büyük/dejenere mesafeler üretebiliyor (simülasyonla doğrulandı,
 # 2026-08-08: 30°+ roll'da köşe pikselleri 100-1000+ m hataya çıkabiliyor).
-MAX_ROLL_FOR_DETECTION_DEG = 30.0
+MAX_ROLL_FOR_DETECTION_DEG = 10.0
 
 # Roll ile AYNI sebep, pitch için: burun kalkarsa (nose-up) ışının ufka göre
 # çökme açısı daha da azalır, aynı sığ-açı büyütmesi oluşur — roll'da
 # eskiden gözlendiği gibi (bkz. yukarısı) pitch de sınırsız bırakılırsa aynı
 # hataya düşer, o yüzden roll'la SİMETRİK sınırlandı.
-MAX_PITCH_FOR_DETECTION_DEG = 30.0
+MAX_PITCH_FOR_DETECTION_DEG = 15.0
 
 # Hesaplanan yatay mesafe (drone -> hedef) bu değeri aşarsa tespit
 # REDDEDİLİR — 2026-08-12 masa/Gazebo testlerinde bulundu: CAMERA_PITCH=45°
