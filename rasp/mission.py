@@ -191,7 +191,7 @@ async def _trigger_release(drone, rp, release_points, aircraft_lat=None, aircraf
           f"(kalan: {sum(1 for r in release_points if not r['dropped'])})")
 
 
-async def drop_trigger_task(drone, release_points):
+async def drop_trigger_task(drone, release_points, landing_start_seq=None):
     """
     Her pozisyon tik'inde GÜNCEL hız/irtifa ile calculate_drop_point()'i
     yeniden hesaplar (hedefin kendisi rp['lat']/rp['lon']'da sabit, balistik
@@ -218,6 +218,13 @@ async def drop_trigger_task(drone, release_points):
 
     Balistik ofset yönü de artık yaw yerine course ile hesaplanıyor: yük
     bırakıldığında uçağın burnu değil, yer hızı vektörü yönünde savrulur.
+
+    landing_start_seq (2026-08-26): hedef WP bloğu sonuna eklenen DO_JUMP'ın
+    (bkz. build_and_start_drop_mission/_make_drop_retry_jump_item) atladığı
+    iniş sekansının NİHAİ seq'i. Yükler döngü tekrar hakkı bitmeden önce
+    ikisi de bırakılırsa, uçağın kalan tekrar hakkını boşuna hedef bloğunu
+    yeniden gezerek harcamasını beklemek yerine set_current_mission_item ile
+    doğrudan bu seq'e atlatılır.
     """
     log.info(f"[DROP] Canlı balistik trigger başlatıldı — {len(release_points)} hedef izleniyor")
     for i, rp in enumerate(release_points):
@@ -285,6 +292,18 @@ async def drop_trigger_task(drone, release_points):
 
         if all(rp["dropped"] for rp in release_points):
             log.info("[DROP] ✓ Tüm yükler bırakıldı — drop_trigger_task sonlanıyor")
+            if landing_start_seq is not None:
+                # Hedef bloğu sonundaki DO_JUMP (bkz. build_and_start_drop_mission)
+                # yükler zaten bırakılmış olsa da kalan tekrar hakkını boşuna
+                # harcayıp hedef bloğunu yeniden gezebilir — FC'yi doğrudan
+                # iniş sekansına atlatarak bu beklemeyi atlıyoruz.
+                try:
+                    await drone.mission_raw.set_current_mission_item(landing_start_seq)
+                    log.info(f"[DROP] ✓ DO_JUMP döngüsü atlanıp doğrudan iniş sekansına "
+                             f"geçildi (WP{landing_start_seq})")
+                except Exception as e:
+                    log.info(f"[DROP] ⚠ iniş sekansına atlama HATASI: {e} — "
+                             f"uçak DO_JUMP döngüsünü kendi haline tamamlayacak")
             break
 
 
@@ -399,6 +418,28 @@ def _build_drop_items(release_points, approach_alt_m, approach_frame=3):
     return items
 
 
+def _make_drop_retry_jump_item(target_seq, repeat_count):
+    """
+    Hedef WP bloğunun (mavi+kırmızı drop WP'leri) hemen sonuna eklenen
+    DO_JUMP (2026-08-26): bir hedef WP'sinin kabul yarıçapına hiç
+    girilemediği (dar dönüş/rüzgar) ya da along/cross-track penceresinin
+    kaçırıldığı (bkz. drop_trigger_task docstring — eskiden bu durumda
+    manuel GCS müdahalesi bekleniyordu) durumda uçak hedef bloğunu
+    config.DROP_RETRY_PASS_COUNT kadar DAHA tekrar dener. Süresiz döngü
+    OLMASIN diye SINIRLI — bir hedef gerçekten ulaşılamazsa sayaç bitince
+    iniş sekansına düşülür. Yükler döngü bitmeden erken bırakılırsa
+    drop_trigger_task bu bekleyişi ATLAYIP set_current_mission_item ile
+    uçağı doğrudan iniş sekansına yönlendirir (bkz. drop_trigger_task).
+
+    target_seq: hedef bloğun İLK öğesinin NİHAİ (resequenced) seq'i —
+    çağıran taraf (build_and_start_drop_mission) new_mission'a eklemeden
+    ÖNCE bu index'i zaten biliyor (home+dönüş sayısı kadar offset).
+    Seq geçici 0 — insert sonrası yeniden numaralandırılır.
+    """
+    return _make_mission_item(0, config.CMD_DO_JUMP, param1=float(target_seq),
+                               param2=float(repeat_count))
+
+
 async def build_and_start_drop_mission(drone, release_points):
     """
     Eski misyonun ortasına item sıkıştırıp set_current_mission_item ile oraya
@@ -415,6 +456,16 @@ async def build_and_start_drop_mission(drone, release_points):
     başlıyoruz). Gerçek navigasyon (drop + iniş) seq 1'den başlar ve
     set_current_mission_item(1) ile FC doğrudan oraya yönlendirilir —
     aksi halde ilk drop hedefi sessizce home ile değiştirilip atlanabilirdi.
+
+    Hedef WP bloğu (mavi+kırmızı drop öğeleri) sonuna, kendi bloğunun BAŞINA
+    dönen bir DO_JUMP eklenir (2026-08-26, bkz. _make_drop_retry_jump_item):
+    bir hedefe kabul yarıçapına hiç girilemez ya da along/cross-track
+    penceresi kaçırılırsa (bkz. drop_trigger_task) uçak bloğu
+    config.DROP_RETRY_PASS_COUNT kadar daha tekrar dener, sonsuza dek
+    dönmez. Bu, iniş sekansında bulunan DO_JUMP'ları ATAN yukarıdaki
+    korumayla ÇELİŞMİYOR — korunan `landing_items` ESKİ (GCS) misyondan
+    kopyalanıyor ve yeni seq'lerde geçersiz olurdu, bu DO_JUMP ise koddan
+    YENİ üretiliyor ve hedef seq'i zaten NİHAİ numaralamaya göre hesaplanıyor.
     """
     log.info(f"[MISSION] Mevcut misyon indiriliyor (iniş WP'lerini almak için)...")
     existing = list(await drone.mission_raw.download_mission())
@@ -450,7 +501,22 @@ async def build_and_start_drop_mission(drone, release_points):
              f"| yaklaşma irtifası={approach_alt_m:.1f}m frame={approach_frame}")
 
     home_item = existing[0]  # gerçek HOME — indirilen eski misyonun seq=0 öğesi, AYNEN korunur
-    new_mission = [home_item, return_item] + drop_items + landing_items
+
+    # Hedef WP bloğunun (mavi+kırmızı) NİHAİ (resequenced) başlangıç index'i —
+    # DO_JUMP hedefi (aşağıda) ve drop_trigger_task'ın erken-iniş atlaması
+    # (2026-08-26) bu değere göre hesaplanıyor; item'lar new_mission'a
+    # eklenmeden ÖNCE biliniyor olması gerekiyor çünkü DO_JUMP param1 bu
+    # index'i taşıyor.
+    _drop_seq_offset = len([home_item, return_item])
+    jump_items = []
+    if drop_items:
+        jump_items = [_make_drop_retry_jump_item(_drop_seq_offset, config.DROP_RETRY_PASS_COUNT)]
+        log.info(f"[MISSION] Hedef bloğu sonuna DO_JUMP eklendi: WP{_drop_seq_offset}'e "
+                 f"{config.DROP_RETRY_PASS_COUNT} tekrar hakkıyla — WP'ye ulaşılamama/geçiş "
+                 f"ıskası durumunda otomatik yeniden deneme (bkz. config.DROP_RETRY_PASS_COUNT)")
+    landing_start_seq = _drop_seq_offset + len(drop_items) + len(jump_items)
+
+    new_mission = [home_item, return_item] + drop_items + jump_items + landing_items
 
     # Tüm seq numaralarını sıfırdan yeniden düzenle — item 0 = gerçek home,
     # item 1 = tarama girişine dönüş, item 2 = ilk drop öğesi
@@ -467,7 +533,8 @@ async def build_and_start_drop_mission(drone, release_points):
         for i, item in enumerate(new_mission)
     ]
     log.info(f"[MISSION] Yeni misyon: {len(resequenced)} öğe "
-          f"(1 home + 1 dönüş + {len(drop_items)} drop + {len(landing_items)} iniş)")
+          f"(1 home + 1 dönüş + {len(drop_items)} drop + {len(jump_items)} do_jump + "
+          f"{len(landing_items)} iniş)")
 
     # HUD'daki "kilit anı WP sırası" düzeltmesi (2026-08-26): state.locked_target_wp
     # o hedef ilk kilitlendiğinde ESKİ (tarama) misyonunun WP index'iyle
@@ -477,8 +544,8 @@ async def build_and_start_drop_mission(drone, release_points):
     # Uçak artık bu YENİ planı izleyeceğinden, HUD'da görünen WP numarası da
     # hedefin BU plandaki drop öğesinin seq'i olmalı — drop_items sırası
     # release_points sırasıyla birebir aynı (bkz. _build_drop_items), offset
-    # [home_item, return_item] uzunluğu kadar (2).
-    _drop_seq_offset = len([home_item, return_item])
+    # [home_item, return_item] uzunluğu kadar (2, _drop_seq_offset yukarıda
+    # DO_JUMP hedefi için zaten hesaplandı).
     for i, rp in enumerate(release_points):
         state.locked_target_wp[rp["color"]] = _drop_seq_offset + i
     log.info(f"[MISSION] Kilitli hedef WP numaraları yeni plana göre güncellendi: "
@@ -495,8 +562,9 @@ async def build_and_start_drop_mission(drone, release_points):
     log.info("[MISSION] ✓ start_mission() — drop sekansı başladı (başa sıçrama yok)")
 
     if release_points:
-        log.info("[MISSION] Canlı balistik drop_trigger_task başlatılıyor")
-        asyncio.create_task(drop_trigger_task(drone, release_points))
+        log.info(f"[MISSION] Canlı balistik drop_trigger_task başlatılıyor "
+                 f"(iniş sekansı WP{landing_start_seq}'de, erken bitişte oraya atlanacak)")
+        asyncio.create_task(drop_trigger_task(drone, release_points, landing_start_seq))
     else:
         log.info("[MISSION] Hedef yok — drop_trigger_task başlatılmadı (yalnızca iniş)")
 

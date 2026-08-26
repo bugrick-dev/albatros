@@ -403,6 +403,17 @@ SEARCH_LOOP_EXIT_WP = 40     # Bu index'ten itibaren olan öğeler "iniş sekans
                               # SAFETY NET olarak kod tarafında duruyor, plan yanlışlıkla eski haline
                               # dönerse sessiz felaketi önler.
 
+# Kod tarafının KENDİ oluşturduğu drop misyonundaki hedef WP bloğu (mavi+kırmızı)
+# sonuna eklenen DO_JUMP'ın tekrar hakkı (2026-08-26): bir hedef WP'sinin kabul
+# yarıçapına hiç girilemediği (dar dönüş/rüzgar) ya da along/cross-track
+# penceresinin kaçırıldığı (bkz. mission.drop_trigger_task) durumda uçak hedef
+# bloğunu bu kadar defa DAHA tekrar dener — SINIRLI, çünkü bir hedef gerçekten
+# ulaşılamazsa uçak sonsuza dek dönmemeli (bkz. SEARCH_TOTAL_TIMEOUT_SEC gibi,
+# süresiz bekleme köke inen bir hata sınıfı). Bu SATIR yukarıdaki "GCS planı
+# DO_JUMP kullanmıyor" notuyla ÇELİŞMİYOR — o not GCS'ten YÜKLENEN plan için,
+# bu ise koddan üretilen drop misyonuna ÖZGÜ, ayrı bir DO_JUMP.
+DROP_RETRY_PASS_COUNT = 2
+
 # --- FC Servo (tek yol — GPIO servo kaldırıldı, 2026-08-16) ---
 SERVO_KIRMIZI_FC_NO = 9      # FC servo kanalı — kırmızı yük (AUX1)
 SERVO_MAVI_FC_NO    = 10     # FC servo kanalı — mavi yük (AUX2)
