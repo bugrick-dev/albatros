@@ -34,6 +34,18 @@ def _rz(psi):
 # devam ediyor; ham projeksiyon adımları gerekirse logger seviyesi DEBUG'a
 # çekilerek görülebilir.
 
+# --- HUD için son reddedilme nedeni (2026-08-26) ---
+# pixel_to_gps() None dönünce SEBEBİ yalnızca (yukarıdaki nottaki performans
+# kaygısıyla) log.debug()'a yazıyor — DEBUG kapalıyken bu sebep hem logda hem
+# HUD'da tamamen görünmez kalıyordu (kırmızı/mavi neden hiç kilitlenmiyor
+# sorusuna canlı yayından cevap yoktu). Dönüş imzasını değiştirip her çağrı
+# noktasını/testi güncellemek yerine, fonksiyon imzasını AYNI bırakıp kısa
+# nedeni bu modül-seviyesi değişkene yazıyoruz — vision.py geo_result None
+# döndüğünde bunu okuyup ekranın sağ tarafına küçük bir satır olarak basar
+# (bkz. vision.py _update_detection, state.detection_reject_reason). Tek
+# thread'den (opencv_processing_thread) çağrıldığı için race riski yok.
+last_reject_reason = None
+
 
 def wrap180(deg):
     """Açıyı [-180, 180) aralığına katlar (180 girişi -180 döner — eşdeğer açı)."""
@@ -100,6 +112,9 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     (2026-08-12 masa/Gazebo testinde ~150-160m'lik "saçma" sapmalar bulundu,
     bkz. config.py MAX_DETECTION_DISTANCE_M notu).
     """
+    global last_reject_reason
+    last_reject_reason = None
+
     log.debug(f"[GEO][pixel_to_gps] Giriş: drone=({drone_lat:.6f},{drone_lon:.6f}) "
           f"alt={alt:.1f}m yaw={yaw_deg:.1f}° roll={roll_deg:.1f}° pitch={pitch_deg:.1f}° "
           f"piksel=({target_cx},{target_cy})")
@@ -107,11 +122,16 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     if abs(roll_deg) > config.MAX_ROLL_FOR_DETECTION_DEG:
         log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: |roll|={abs(roll_deg):.1f}° > "
                  f"MAX_ROLL_FOR_DETECTION_DEG={config.MAX_ROLL_FOR_DETECTION_DEG}° — tespit atlanıyor")
+        # NOT: HUD (cv2.putText/Hershey font) UTF-8 "°" karakterini render
+        # edemiyor ("??" basıyor, 2026-08-26 önizlemede görüldü) — bu yüzden
+        # (log.debug'daki tam mesajın aksine) burada derece işareti YOK.
+        last_reject_reason = f"ROLL {abs(roll_deg):.0f}>{config.MAX_ROLL_FOR_DETECTION_DEG:.0f}"
         return None
 
     if abs(pitch_deg) > config.MAX_PITCH_FOR_DETECTION_DEG:
         log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: |pitch|={abs(pitch_deg):.1f}° > "
                  f"MAX_PITCH_FOR_DETECTION_DEG={config.MAX_PITCH_FOR_DETECTION_DEG}° — tespit atlanıyor")
+        last_reject_reason = f"PITCH {abs(pitch_deg):.0f}>{config.MAX_PITCH_FOR_DETECTION_DEG:.0f}"
         return None
 
     if config.CAMERA_CALIBRATED:
@@ -171,6 +191,7 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     if ray_world[2] <= 0.05:
         log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: ışın ufka çok yakın/üstünde "
                  f"(dünya-aşağı bileşeni={ray_world[2]:.3f}) — dejenere projeksiyon")
+        last_reject_reason = "UFUK/DEJENERE"
         return None
 
     t = alt / ray_world[2]
@@ -183,6 +204,7 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
         log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: mesafe={horizontal_dist:.1f}m > "
                  f"MAX_DETECTION_DISTANCE_M={config.MAX_DETECTION_DISTANCE_M}m — sığ açı/dejenere "
                  f"projeksiyon şüphesi, tespit atlanıyor")
+        last_reject_reason = f"MESAFE {horizontal_dist:.0f}m>{config.MAX_DETECTION_DISTANCE_M:.0f}m"
         return None
 
     target_lat = drone_lat + (delta_north / 111320)
@@ -192,6 +214,7 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     if config.GEOFENCE_POLYGON and not point_in_polygon(target_lat, target_lon, config.GEOFENCE_POLYGON):
         log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: hedef GPS=({target_lat:.6f}, {target_lon:.6f}) "
                  f"GEOFENCE_POLYGON dışında — tespit atlanıyor")
+        last_reject_reason = "GEOFENCE DISI"  # HUD ASCII-only (bkz. ROLL/PITCH notu)
         return None
 
     return target_lat, target_lon

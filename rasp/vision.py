@@ -137,6 +137,7 @@ def _finalize_track(color_key, tracking, queue, queued_colors, reason):
     track = tracking[color_key]
     queue.put({"color": color_key, "lat": track["lat"], "lon": track["lon"], "alt": track["alt"]})
     queued_colors.add(color_key)
+    state.detection_reject_reason[color_key] = None
     log.info(f"[VISION] *** {color_key.upper()} KİLİTLENDİ ({reason}) *** "
           f"({track['lat']:.6f},{track['lon']:.6f}) en-iyi-mesafe={track['dist']:.1f}m "
           f"— mission kuyruğuna eklendi")
@@ -228,26 +229,43 @@ def _update_detection(mask, color_key, queue, queued_colors, tel, tracking, fram
                         tel.get("att_age_s") or 0.0) <= config.TELEMETRY_MATCH_MAX_AGE_S
         ekf_ok = state.ekf_health["global_position_ok"] is not False
 
-        if (state.detection_active.is_set() and not locked
-                and None not in tel.values() and tel_fresh and ekf_ok):
-            geo_result = geo.pixel_to_gps(
-                tel["lat"], tel["lon"], tel["alt"], tel["yaw"],
-                tel["roll"], tel["pitch"], cx, cy,
-            )
-            if geo_result is not None:
-                lat, lon = geo_result
-                dist = geo.haversine(tel["lat"], tel["lon"], lat, lon)
-                if track is None or dist < track["dist"]:
-                    tracking[color_key] = track = {
-                        "lat": lat, "lon": lon, "alt": tel["alt"], "dist": dist,
-                        "worse_streak": 0, "miss_streak": 0,
-                        "first_seen": track["first_seen"] if track else time.time(),
-                    }
-                    log.info(f"[VISION] {color_key.upper()} yeni en-iyi örnek: "
-                          f"mesafe={dist:.1f}m piksel=({cx},{cy})")
+        # HUD'un sağındaki canlı "reddedildi" satırı (2026-08-26, bkz.
+        # state.detection_reject_reason, geo.last_reject_reason): aşağıdaki
+        # dallar orijinal `if (... and ... and ...)` tek satırının SIRAYLA
+        # açılmış hali — davranış aynı, yalnızca hangi koşulun reddettiği
+        # ayrı ayrı yakalanıp kısa bir metinle saklanıyor.
+        if state.detection_active.is_set() and not locked:
+            # NOT: HUD (cv2.putText/Hershey font) Türkçe İ/Ğ/Ş/ı gibi UTF-8
+            # karakterleri render edemiyor ("??" basıyor, 2026-08-26 önizlemede
+            # görüldü) — geo.py'deki aynı notla tutarlı, bu metinler ASCII-only.
+            if None in tel.values():
+                state.detection_reject_reason[color_key] = "TELEMETRI YOK"
+            elif not tel_fresh:
+                state.detection_reject_reason[color_key] = "TELEMETRI BAYAT"
+            elif not ekf_ok:
+                state.detection_reject_reason[color_key] = "EKF SAGLIKSIZ"
+            else:
+                geo_result = geo.pixel_to_gps(
+                    tel["lat"], tel["lon"], tel["alt"], tel["yaw"],
+                    tel["roll"], tel["pitch"], cx, cy,
+                )
+                if geo_result is None:
+                    state.detection_reject_reason[color_key] = geo.last_reject_reason or "GEO RED"
                 else:
-                    track["worse_streak"] += 1
-                    track["miss_streak"] = 0
+                    lat, lon = geo_result
+                    dist = geo.haversine(tel["lat"], tel["lon"], lat, lon)
+                    if track is None or dist < track["dist"]:
+                        tracking[color_key] = track = {
+                            "lat": lat, "lon": lon, "alt": tel["alt"], "dist": dist,
+                            "worse_streak": 0, "miss_streak": 0,
+                            "first_seen": track["first_seen"] if track else time.time(),
+                        }
+                        state.detection_reject_reason[color_key] = None
+                        log.info(f"[VISION] {color_key.upper()} yeni en-iyi örnek: "
+                              f"mesafe={dist:.1f}m piksel=({cx},{cy})")
+                    else:
+                        track["worse_streak"] += 1
+                        track["miss_streak"] = 0
     else:
         bridged = False
         if (tstate is not None and tstate["cv"] is not None and not locked
@@ -725,6 +743,18 @@ def opencv_processing_thread(queue):
                     pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     col_ok if detected else col_no, 2,
                 )
+                # Canlı reddedilme nedeni (2026-08-26, bkz. state.detection_reject_reason)
+                # — MAVI/KIRMIZI göstergesinin HEMEN ALTINA, küçük punto: bir kare
+                # renk+şekil filtresini geçip GPS aşamasında reddedilirse (roll/pitch,
+                # bayat telemetri, EKF, ufuk/mesafe/geofence) sebep burada görünür.
+                # KİLİTLENİNCE (_finalize_track) temizlenir, o zaman bu satır kaybolur.
+                reason = state.detection_reject_reason[color]
+                if reason is not None:
+                    cv2.putText(
+                        stream_frame, f"RED: {reason}",
+                        (pos[0], pos[1] + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        (0, 165, 255), 1,
+                    )
 
             # Kilitlenen hedefler (KALICI GPS + kilit anındaki WP sırası,
             # 2026-08-20/21) + gönderilen servo komutları ("SERVO AÇILDI") —
@@ -747,12 +777,22 @@ def opencv_processing_thread(queue):
                  lambda lat, lon, wp: f"KIRMIZI KILIT: WP{wp if wp is not None else '?'} {lat:.6f},{lon:.6f}",
                  (0, 0, 255), config.HEIGHT - 108),
             )
+            # KILIT/SERVO satırları (2026-08-26): geri kalan HUD'dan (SIMPLEX
+            # 0.5) daha büyük + DUPLEX font — DUPLEX çift-kalem/dolgulu
+            # harfler çizdiği için tek-kalem SIMPLEX'e göre düşük bitrate'te
+            # (H264 blok gürültüsü) kayda değer ölçüde daha okunaklı kalıyor;
+            # bu iki satır uçuş sonrası en çok referans verilen bilgi olduğu
+            # için ayrıca büyütüldü. En uzun olası metin (WP40, 2 haneli
+            # servo kanalı) 640px genişliğe hâlâ rahat sığıyor (ölçüldü:
+            # ~560px < WIDTH).
+            _LOCK_FONT, _LOCK_SCALE, _LOCK_THICK = cv2.FONT_HERSHEY_DUPLEX, 0.6, 2
+
             for color, locked, fmt, box_color, y in _hud_slots:
                 if locked is not None:
                     lat, lon = locked
                     wp_at_lock = state.locked_target_wp[color]
                     cv2.putText(stream_frame, fmt(lat, lon, wp_at_lock), (10, y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 2)
+                                _LOCK_FONT, _LOCK_SCALE, box_color, _LOCK_THICK)
 
             for color, y in (("mavi", config.HEIGHT - 70), ("kirmizi", config.HEIGHT - 45)):
                 ev = state.servo_events[color]
@@ -762,8 +802,8 @@ def opencv_processing_thread(queue):
                     cv2.putText(
                         stream_frame,
                         f"SERVO ACILDI: {color.upper()} kanal={ev['channel']} @ {lat_str},{lon_str}",
-                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        (0, 255, 0), 2,
+                        (10, y), _LOCK_FONT, _LOCK_SCALE,
+                        (0, 255, 0), _LOCK_THICK,
                     )
 
             try:

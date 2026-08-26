@@ -469,6 +469,22 @@ async def build_and_start_drop_mission(drone, release_points):
     log.info(f"[MISSION] Yeni misyon: {len(resequenced)} öğe "
           f"(1 home + 1 dönüş + {len(drop_items)} drop + {len(landing_items)} iniş)")
 
+    # HUD'daki "kilit anı WP sırası" düzeltmesi (2026-08-26): state.locked_target_wp
+    # o hedef ilk kilitlendiğinde ESKİ (tarama) misyonunun WP index'iyle
+    # dolduruluyordu (bkz. mission_task). O index burada yüklenen YENİ misyonda
+    # anlamsız/saçma — tarama misyonu çok daha uzun/farklı numaralıyken, yeni
+    # misyon 0=home, 1=dönüş, 2..=drop öğeleri şeklinde baştan numaralanıyor.
+    # Uçak artık bu YENİ planı izleyeceğinden, HUD'da görünen WP numarası da
+    # hedefin BU plandaki drop öğesinin seq'i olmalı — drop_items sırası
+    # release_points sırasıyla birebir aynı (bkz. _build_drop_items), offset
+    # [home_item, return_item] uzunluğu kadar (2).
+    _drop_seq_offset = len([home_item, return_item])
+    for i, rp in enumerate(release_points):
+        state.locked_target_wp[rp["color"]] = _drop_seq_offset + i
+    log.info(f"[MISSION] Kilitli hedef WP numaraları yeni plana göre güncellendi: "
+             + ", ".join(f"{rp['color'].upper()}=WP{_drop_seq_offset + i}"
+                          for i, rp in enumerate(release_points)))
+
     await drone.mission_raw.upload_mission(resequenced)
     log.info("[MISSION] ✓ upload_mission() tamamlandı")
 

@@ -84,7 +84,24 @@ locked_targets = {"mavi": None, "kirmizi": None}  # {color: (lat, lon)} | None
 # hedef mission'daki kaçıncı WP'ye denk geliyordu" sorusuna HUD'dan cevap
 # vermek için (bkz. mission.py mission_task, vision.py overlay). current_wp
 # gibi sürekli güncellenmez, locked_targets gibi KALICIDIR.
+#
+# DÜZELTME (2026-08-26): kilit anında yazılan bu değer ESKİ (tarama) misyonunun
+# WP index'idir — build_and_start_drop_mission() misyonu tamamen yeniden
+# numaralandırıp (0=home, 1=dönüş, 2..=drop) yüklediğinde bu eski index HUD'da
+# saçma/anlamsız kalıyordu. build_and_start_drop_mission() artık yeni planı
+# yazar yazmaz bu değeri o hedefin YENİ plandaki drop öğesi seq'iyle
+# EZİYOR — HUD her zaman uçağın O AN izlediği plana göre doğru WP'yi gösterir.
 locked_target_wp = {"mavi": None, "kirmizi": None}  # {color: int} | None
+
+# --- Canlı reddedilme nedeni (2026-08-26) ---
+# Bir kare renk+şekil filtresini geçip GPS hesabına girdiğinde bu hesap
+# (roll/pitch toleransı, ufuk/dejenere projeksiyon, MAX_DETECTION_DISTANCE_M,
+# geofence — bkz. geo.pixel_to_gps) ya da tel_fresh/ekf_ok kontrolü onu
+# reddederse kısa nedeni burada tutar; vision.py HUD'un SAĞ tarafında küçük
+# bir satır olarak basar (üstteki MAVI/KIRMIZI OK göstergesinin hemen altı).
+# KİLİTLENDİĞİNDE (_finalize_track) temizlenir — o andan sonra sol-alttaki
+# kalıcı "KİLİT" satırı zaten yeterli bilgiyi veriyor.
+detection_reject_reason = {"mavi": None, "kirmizi": None}  # {color: str} | None
 
 # --- Gönderilen servo (bırakma) komutları — HUD'da "SERVO AÇILDI" bilgisi için ---
 # (2026-08-20, bkz. mission.py _trigger_release).
