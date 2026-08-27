@@ -350,17 +350,17 @@ if CAMERA_CALIB_PATH.is_file():
 # noktasından 40m öteye (şartnamedeki 20m ölçüm sınırının 2 katı!) atılmasına
 # ve rota başka bacaktayken (ör. öteki hedefe giderken) yanlış tetiklemeye
 # izin veriyordu.
-DROP_TRIGGER_RADIUS_M      = 40
+DROP_TRIGGER_RADIUS_M      = 20
 # Bırakma anı: release noktasına along-track kalan süre bu değerin altına
 # inince tetiklenir (pozisyon akışı ~2-5Hz → tik başına ~0.2-0.5s; bir tik
 # sonrasında noktayı geçmiş olmamak için akış periyodundan biraz büyük seçildi).
-DROP_ALONG_TRIGGER_S       = 0.35
+DROP_ALONG_TRIGGER_S       = 0.25
 # Release noktasına dik (cross-track) sapma bu değerden büyükse BIRAKMA —
 # şartname isabet ölçümünü hedef merkezinden 20m ile sınırlıyor (dışı 0 puan);
 # 15m cross-track + balistik/rüzgar hatası ~20m bütçesinin içinde kalma çabası.
 DROP_MAX_CROSS_TRACK_M     = 15.0
 SCAN_EXIT_DELAY_SEC        = 15
-SINGLE_TARGET_TIMEOUT_SEC  = 30
+SINGLE_TARGET_TIMEOUT_SEC  = 150
 # Tespit aktif olduktan (DETECTION_ACTIVE_WP) sonra HİÇ hedef bulunamazsa
 # mission_task (kod tarafı) hedef beklemeye devam eder — şartnamede Görev 2
 # uçuş süresi azami 10 dakika, aşımı görevi geçersiz kılıyor (2026-08-17).
