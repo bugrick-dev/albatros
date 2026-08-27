@@ -378,7 +378,7 @@ def _make_return_to_search_entry_item(existing):
     )
 
 
-def _build_drop_items(release_points, approach_alt_m, approach_frame=3):
+def _build_drop_items(release_points):
     """
     Hedeflere YÖNLENDİRME waypoint'lerini oluşturur (sade NAV_WAYPOINT —
     direkt WP'ye gidilir, servo AÇMA burada değil). Asıl drop tetikleme
@@ -393,27 +393,31 @@ def _build_drop_items(release_points, approach_alt_m, approach_frame=3):
     balistik hesap yapıyor, mission'ın kendi hız komutuna ihtiyacı yok;
     tek amacı uçağı doğrudan hedef koordinatına götürmek.
 
-    approach_alt_m/approach_frame: waypoint'lerin İRTİFASI ve FRAME'i — GCS
-    planındaki SEARCH_START_WP öğesinden (build_and_start_drop_mission'dan
-    geliyor, entry.z/entry.frame — _make_return_to_search_entry_item'ın
-    kullandığıyla AYNI kaynak), rp["alt"] (tespit anındaki ANLIK telemetri
-    irtifası, her zaman relative) DEĞİL. rp["alt"] tek bir telemetri örneği —
-    bank/tur sırasında, GPS/baro gürültüsünde ya da zamanla gerçek irtifadan
-    sapmış olabilir; bunu NAV_WAYPOINT hedefi yaparsak uçak o waypoint'e
-    ulaştığında FC ani tırmanış/DALIŞ komutu üretebilir (2026-08-09: sahada
-    gözlenen ani dalış sonrası bulundu/düzeltildi). Frame'i de entry'den
-    almak (sabit 3 yerine), planın hangi frame'de yazıldığından bağımsız
-    tutarlılık sağlıyor.
+    İrtifa (2026-08-27): hedef WP'leri artık SABİT config.DROP_TARGET_ALT_M
+    (relative, MAV_FRAME_GLOBAL_RELATIVE_ALT) taşıyor — tarama irtifasından
+    (SEARCH_START_WP'nin planlı irtifası, hâlâ daha yüksek) bu WP'ye doğru
+    gerçek bir ALÇALMA/yaklaşma emri oluşturuluyor, uçak artık hedefin
+    üstüne tarama irtifasında düz geçmiyor. Önceki tasarımda (2026-08-20…26)
+    hedef WP'ler SEARCH_START_WP'nin irtifasını devralıyordu — irtifa hiç
+    değişmediği için "yaklaşma" gerçekleşmiyordu, yalnızca yatay yönlendirme
+    vardı.
+    rp["alt"] (tespit anındaki ANLIK telemetri irtifası) BİLEREK
+    kullanılmıyor — tek bir telemetri örneği, bank/tur sırasında GPS/baro
+    gürültüsünde ya da zamanla gerçek irtifadan sapmış olabilir; bunu
+    NAV_WAYPOINT hedefi yaparsak uçak o waypoint'e ulaştığında FC ani
+    tırmanış/DALIŞ komutu üretebilir (2026-08-09: sahada gözlenen ani dalış
+    sonrası bulunup DEĞİL rp["alt"] KULLANILMAYARAK düzeltildi — sabit
+    DROP_TARGET_ALT_M bu riski taşımıyor, telemetriden bağımsız).
     """
     items = []
     for i, rp in enumerate(release_points):
         log.info(f"[MISSION] === Yönlendirme öğesi: Hedef {i+1} {rp['color'].upper()} "
               f"({rp['lat']:.6f},{rp['lon']:.6f}) tespit-anı-irtifası={rp['alt']:.1f}m "
-              f"| WP irtifası (planlı)={approach_alt_m:.1f}m frame={approach_frame} ===")
+              f"| WP irtifası (sabit, yaklaşma)={config.DROP_TARGET_ALT_M:.1f}m ===")
 
         items.append(_make_mission_item(
             0, config.CMD_NAV_WAYPOINT, param2=15.0,
-            lat=rp["lat"], lon=rp["lon"], alt=approach_alt_m, frame=approach_frame,
+            lat=rp["lat"], lon=rp["lon"], alt=config.DROP_TARGET_ALT_M, frame=3,
         ))
     return items
 
@@ -491,14 +495,12 @@ async def build_and_start_drop_mission(drone, release_points):
     return_item = _make_return_to_search_entry_item(existing)
     log.info(f"[MISSION] Tarama girişine dönüş öğesi eklendi (SEARCH_START_WP={config.SEARCH_START_WP} konumu)")
 
-    # Drop yaklaşma waypoint'leri için irtifa+frame: GCS planındaki
-    # SEARCH_START_WP öğesinden (return_item'ınkiyle AYNI kaynak) — rp["alt"]
-    # (tespit anındaki anlık telemetri) DEĞİL, bkz. _build_drop_items docstring.
-    approach_alt_m   = existing[config.SEARCH_START_WP].z
-    approach_frame   = existing[config.SEARCH_START_WP].frame
-    drop_items = _build_drop_items(release_points, approach_alt_m, approach_frame)
+    # Drop yaklaşma waypoint'leri artık SABİT config.DROP_TARGET_ALT_M taşıyor
+    # (yere yaklaşma davranışı) — GCS planındaki SEARCH_START_WP irtifasını
+    # DEVRALMIYOR, bkz. _build_drop_items docstring.
+    drop_items = _build_drop_items(release_points)
     log.info(f"[MISSION] {len(drop_items)} drop öğesi oluşturuldu "
-             f"| yaklaşma irtifası={approach_alt_m:.1f}m frame={approach_frame}")
+             f"| hedef irtifası={config.DROP_TARGET_ALT_M:.1f}m (sabit, yaklaşma)")
 
     home_item = existing[0]  # gerçek HOME — indirilen eski misyonun seq=0 öğesi, AYNEN korunur
 
@@ -508,12 +510,25 @@ async def build_and_start_drop_mission(drone, release_points):
     # eklenmeden ÖNCE biliniyor olması gerekiyor çünkü DO_JUMP param1 bu
     # index'i taşıyor.
     _drop_seq_offset = len([home_item, return_item])
+    # DO_JUMP hedefi (2026-08-27): 2+ hedefte bloğun BAŞINA (_drop_seq_offset,
+    # ilk drop öğesi) atlamak sorun değil — uçak mavi→kırmızı sırasıyla baştan
+    # düzgün bir yaklaşma bacağı katediyor. TEK hedefte ise bloğun başı ZATEN
+    # o tek drop öğesinin kendisi — uçak WP'yi YENİ geçmişken kendi üstüne
+    # atlarsa hizalanacak bacağı olmadan anlık keskin dönüşe zorlanıyor
+    # (kararsız/dar dönüş, tam da bu DO_JUMP'ın çözmeye çalıştığı sorunu
+    # büyütüyor). Bu yüzden tek hedefte atlama noktası bir öncekine,
+    # return_item'a (tarama girişine dönüş, seq=1) çekilir — uçak ilk
+    # yaklaşmasındakiyle AYNI bacağı kullanarak hedefe yeniden yönelir.
+    search_entry_seq = len([home_item])  # return_item'ın nihai seq'i (=1)
     jump_items = []
     if drop_items:
-        jump_items = [_make_drop_retry_jump_item(_drop_seq_offset, config.DROP_RETRY_PASS_COUNT)]
-        log.info(f"[MISSION] Hedef bloğu sonuna DO_JUMP eklendi: WP{_drop_seq_offset}'e "
-                 f"{config.DROP_RETRY_PASS_COUNT} tekrar hakkıyla — WP'ye ulaşılamama/geçiş "
-                 f"ıskası durumunda otomatik yeniden deneme (bkz. config.DROP_RETRY_PASS_COUNT)")
+        jump_target_seq = _drop_seq_offset if len(release_points) > 1 else search_entry_seq
+        jump_items = [_make_drop_retry_jump_item(jump_target_seq, config.DROP_RETRY_PASS_COUNT)]
+        log.info(f"[MISSION] Hedef bloğu sonuna DO_JUMP eklendi: WP{jump_target_seq}'e "
+                 f"{config.DROP_RETRY_PASS_COUNT} tekrar hakkıyla "
+                 f"({'tarama girişine dönüş — tek hedef' if len(release_points) == 1 else 'hedef bloğu başı'}) "
+                 f"— WP'ye ulaşılamama/geçiş ıskası durumunda otomatik yeniden deneme "
+                 f"(bkz. config.DROP_RETRY_PASS_COUNT)")
     landing_start_seq = _drop_seq_offset + len(drop_items) + len(jump_items)
 
     new_mission = [home_item, return_item] + drop_items + jump_items + landing_items
@@ -613,7 +628,6 @@ async def detection_activation_task(drone):
 async def mission_task(drone, queue):
     log.info("[MISSION] mission_task başladı — hedef tespiti bekleniyor")
     release_points       = []
-    first_detection_time = None
     search_deadline      = None
     last_wait_log        = 0.0
 
@@ -648,15 +662,22 @@ async def mission_task(drone, queue):
             log.info(f"[MISSION] Kuyruktan alındı: {target['color'].upper()} "
                   f"({target['lat']:.6f},{target['lon']:.6f})")
         except Empty:
-            if len(release_points) == 1 and first_detection_time:
-                elapsed   = time.time() - first_detection_time
-                remaining = config.SINGLE_TARGET_TIMEOUT_SEC - elapsed
-                if elapsed > config.SINGLE_TARGET_TIMEOUT_SEC:
-                    log.info(f"[MISSION] ⚠ Timeout ({config.SINGLE_TARGET_TIMEOUT_SEC}s) doldu — "
+            # Süre bazlı SINGLE_TARGET_TIMEOUT_SEC kaldırıldı (2026-08-27) —
+            # testte işe yaramadı (uçak WP30'u geçtikten çok önce/sonra süre
+            # dolabiliyordu). Artık WP index'i doğrudan referans: tarama
+            # bacağı SEARCH_LOOP_EXIT_WP'de (30) bitiyor, uçak o WP'yi
+            # GEÇTİYSE artık ikinci hedef aranmaz, eldeki tek hedefle devam
+            # edilir.
+            if len(release_points) == 1:
+                current_wp_idx = state.current_wp["index"]
+                if current_wp_idx is not None and current_wp_idx >= config.SEARCH_LOOP_EXIT_WP:
+                    log.info(f"[MISSION] ⚠ WP{current_wp_idx} — tarama bacağı sonu "
+                          f"(SEARCH_LOOP_EXIT_WP={config.SEARCH_LOOP_EXIT_WP}) geçildi — "
                           f"tek hedefle devam ediliyor")
                     break
                 if now_m - last_wait_log >= 5.0:
-                    log.info(f"[MISSION] İkinci hedef bekleniyor... (kalan≈{remaining:.0f}s)")
+                    log.info(f"[MISSION] İkinci hedef bekleniyor... "
+                          f"(WP {current_wp_idx}/{config.SEARCH_LOOP_EXIT_WP})")
                     last_wait_log = now_m
             await asyncio.sleep(0.1)
             continue
@@ -685,8 +706,6 @@ async def mission_task(drone, queue):
             "alt":     target["alt"],
             "dropped": False,
         })
-        if first_detection_time is None:
-            first_detection_time = time.time()
 
         # HUD'da kalıcı "kilit" bilgisi için — canlı tespitten (detected_targets)
         # bağımsız, hedef kadrajdan çıksa/tracker kaybolsa bile burada kalır

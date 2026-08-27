@@ -153,7 +153,7 @@ async def run():
     log.info("\n" + "=" * 60)
     log.info("✓ SİSTEM HAZIR — tüm görevler başlıyor")
     log.info(f"  Tarama sonrası bekleme : {config.SCAN_EXIT_DELAY_SEC}s")
-    log.info(f"  Tek hedef timeout      : {config.SINGLE_TARGET_TIMEOUT_SEC}s")
+    log.info(f"  Tarama bacağı sonu WP  : {config.SEARCH_LOOP_EXIT_WP}")
     log.info(f"  Drop tetik mesafesi    : {config.DROP_TRIGGER_RADIUS_M}m")
     log.info("=" * 60 + "\n")
 

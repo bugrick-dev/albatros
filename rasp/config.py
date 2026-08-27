@@ -359,8 +359,21 @@ DROP_ALONG_TRIGGER_S       = 0.25
 # şartname isabet ölçümünü hedef merkezinden 20m ile sınırlıyor (dışı 0 puan);
 # 15m cross-track + balistik/rüzgar hatası ~20m bütçesinin içinde kalma çabası.
 DROP_MAX_CROSS_TRACK_M     = 15.0
+# Hedef WP'lerinin (mavi+kırmızı yönlendirme öğeleri) SABİT irtifası —
+# relative, MAV_FRAME_GLOBAL_RELATIVE_ALT (2026-08-27). Tarama irtifasından
+# (daha yüksek) bu WP'ye doğru gerçek bir ALÇALMA/yaklaşma emri oluşturur —
+# eskiden (2026-08-20…26) hedef WP'ler SEARCH_START_WP'nin planlı irtifasını
+# devralıyordu, irtifa hiç değişmediği için yatay yönlendirmeden öte bir
+# "yaklaşma" yoktu. rp["alt"] (tespit anındaki anlık/gürültülü telemetri)
+# KULLANILMIYOR — sabit değer FC'ye ani tırmanış/dalış riskini taşımaz
+# (bkz. mission._build_drop_items docstring, 2026-08-09 dalış olayı notu).
+DROP_TARGET_ALT_M          = 25.0
 SCAN_EXIT_DELAY_SEC        = 15
-SINGLE_TARGET_TIMEOUT_SEC  = 150
+# SINGLE_TARGET_TIMEOUT_SEC KALDIRILDI (2026-08-27) — süre bazlı timeout
+# testte işe yaramadı. Artık tek hedef bulunduğunda ikinci hedef için WP
+# index'i SEARCH_LOOP_EXIT_WP'yi (aşağıda) GEÇENE kadar beklenir, süreye
+# bakılmaz (bkz. mission.mission_task).
+#
 # Tespit aktif olduktan (DETECTION_ACTIVE_WP) sonra HİÇ hedef bulunamazsa
 # mission_task (kod tarafı) hedef beklemeye devam eder — şartnamede Görev 2
 # uçuş süresi azami 10 dakika, aşımı görevi geçersiz kılıyor (2026-08-17).
@@ -418,6 +431,12 @@ SEARCH_LOOP_EXIT_WP = 30     # Bu index'ten itibaren olan öğeler "iniş sekans
 # süresiz bekleme köke inen bir hata sınıfı). Bu SATIR yukarıdaki "GCS planı
 # DO_JUMP kullanmıyor" notuyla ÇELİŞMİYOR — o not GCS'ten YÜKLENEN plan için,
 # bu ise koddan üretilen drop misyonuna ÖZGÜ, ayrı bir DO_JUMP.
+#
+# NOT (2026-08-27): TEK hedef varsa DO_JUMP bloğun başına (=tek hedefin
+# kendi WP'si) DEĞİL, bir öncesindeki tarama-girişine-dönüş öğesine atlar —
+# uçak WP'yi yeni geçmişken kendi üstüne sıçratılırsa hizalanacak bacağı
+# olmadan kararsız/dar bir dönüşe zorlanır (bkz. mission.
+# build_and_start_drop_mission). 2+ hedefte bloğun başına atlamak sorunsuz.
 DROP_RETRY_PASS_COUNT = 2
 
 # --- FC Servo (tek yol — GPIO servo kaldırıldı, 2026-08-16) ---
