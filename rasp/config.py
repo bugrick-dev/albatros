@@ -368,6 +368,17 @@ DROP_MAX_CROSS_TRACK_M     = 15.0
 # KULLANILMIYOR — sabit değer FC'ye ani tırmanış/dalış riskini taşımaz
 # (bkz. mission._build_drop_items docstring, 2026-08-09 dalış olayı notu).
 DROP_TARGET_ALT_M          = 25.0
+# Hedef WP'lerinin MAVLink acceptance radius'u (NAV_WAYPOINT param2, bkz.
+# mission._build_drop_items). NOT: bu değer uçağın İZLEDİĞİ ROTAYI değiştirmez
+# (rota ArduPilot L1 kontrolcüsü + fiziksel dönüş yarıçapına/bank limitine
+# göre belirlenir) — yalnızca WP'nin NE ZAMAN "ulaşıldı" sayılıp bir sonraki
+# öğeye (hedef bloğunda bu, DO_JUMP retry'dir — bkz. _make_drop_retry_jump_item)
+# geçileceğini kontrol eder. Eskiden 15m idi: uçak hedeften 15m gibi geniş
+# bir mesafeden geçse bile WP "tamam" sayılıp DO_JUMP retry hiç tetiklenmeden
+# atlanıyordu. Küçültülünce kötü/uzak geçişler daha geç "tamam" sayılır,
+# DO_JUMP retry bloğu daha güvenilir devreye girer (2026-08-31 — saha
+# gözlemi: uçak bazen hedefin tam üstünden geçmiyor).
+DROP_WP_ACCEPT_RADIUS_M    = 10.0
 SCAN_EXIT_DELAY_SEC        = 15
 # SINGLE_TARGET_TIMEOUT_SEC KALDIRILDI (2026-08-27) — süre bazlı timeout
 # testte işe yaramadı. Artık tek hedef bulunduğunda ikinci hedef için WP

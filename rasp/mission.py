@@ -416,7 +416,7 @@ def _build_drop_items(release_points):
               f"| WP irtifası (sabit, yaklaşma)={config.DROP_TARGET_ALT_M:.1f}m ===")
 
         items.append(_make_mission_item(
-            0, config.CMD_NAV_WAYPOINT, param2=15.0,
+            0, config.CMD_NAV_WAYPOINT, param2=config.DROP_WP_ACCEPT_RADIUS_M,
             lat=rp["lat"], lon=rp["lon"], alt=config.DROP_TARGET_ALT_M, frame=3,
         ))
     return items
