@@ -366,6 +366,16 @@ def _make_return_to_search_entry_item(existing):
     için dar açılı/öngörülemez bir dönüş olabilir. Bunun yerine önce bilinen,
     sabit bir noktaya (tarama bacağının giriş WP'si) dönülüp yaklaşma oradan
     başlatılır. Seq geçici 0 — insert sonrası yeniden numaralandırılır.
+
+    İrtifa (2026-09-01): lat/lon GCS planındaki WP{SEARCH_START_WP}'den
+    (entry.x/y) AYNEN alınır ama irtifa entry.z (tarama irtifası, GCS'te
+    50m) DEĞİL, drop WP'leriyle AYNI config.DROP_TARGET_ALT_M kullanılır.
+    Eskiden entry.z (50m) korunuyordu — uçak bu dönüş noktasından ilk drop
+    WP'sine (25m) çok kısa bir bacakta inmek zorunda kalıyor, saha
+    gözlemi: hedeflerde 25m'ye alçalma yetişmiyordu. Artık alçalma tarama
+    bacağının kesildiği yerden (çok daha uzun mesafe/süre) itibaren
+    kademeli başlıyor, dönüş noktasına vardığında uçak zaten hedef
+    irtifasında oluyor.
     """
     entry = existing[config.SEARCH_START_WP]
     if entry.x == 0 and entry.y == 0:
@@ -374,7 +384,7 @@ def _make_return_to_search_entry_item(existing):
     return RawMissionItem(
         0, entry.frame, config.CMD_NAV_WAYPOINT, 0, 1,
         0.0, 15.0, 0.0, 0.0,
-        entry.x, entry.y, entry.z, 0,
+        entry.x, entry.y, config.DROP_TARGET_ALT_M, 0,
     )
 
 
@@ -493,7 +503,8 @@ async def build_and_start_drop_mission(drone, release_points):
         landing_items = [it for it in landing_items if it.command != config.CMD_DO_JUMP]
 
     return_item = _make_return_to_search_entry_item(existing)
-    log.info(f"[MISSION] Tarama girişine dönüş öğesi eklendi (SEARCH_START_WP={config.SEARCH_START_WP} konumu)")
+    log.info(f"[MISSION] Tarama girişine dönüş öğesi eklendi (SEARCH_START_WP={config.SEARCH_START_WP} konumu, "
+             f"irtifa={config.DROP_TARGET_ALT_M:.1f}m — tarama irtifası DEĞİL, hedef irtifası)")
 
     # Drop yaklaşma waypoint'leri artık SABİT config.DROP_TARGET_ALT_M taşıyor
     # (yere yaklaşma davranışı) — GCS planındaki SEARCH_START_WP irtifasını

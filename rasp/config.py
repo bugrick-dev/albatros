@@ -359,6 +359,17 @@ DROP_ALONG_TRIGGER_S       = 0.25
 # şartname isabet ölçümünü hedef merkezinden 20m ile sınırlıyor (dışı 0 puan);
 # 15m cross-track + balistik/rüzgar hatası ~20m bütçesinin içinde kalma çabası.
 DROP_MAX_CROSS_TRACK_M     = 15.0
+# Menzil telafisi (2026-09-01): geo.calculate_drop_point() saf balistik
+# nokta-kütle modeli kullanıyor (hava sürtünmesi YOK, ani/gecikmesiz bırakma
+# varsayılıyor) — gerçekte yük düşerken sürtünmeyle yavaşlıyor ve DO_SET_SERVO
+# komutu ile mekanizmanın fiilen açılması arasında da küçük bir gecikme var;
+# ikisi de aynı yönde hata yapıyor (gerçek ileri savrulma, modelin öngördüğünden
+# AZ) — saha gözlemi: yükler TUTARLI şekilde hedefin ~5m gerisine düşüyor.
+# Bu sabit, calculate_drop_point()'in hesapladığı geri-ofseti (horizontal_dist)
+# bu kadar metre azaltıp release noktasını hedefe yaklaştırarak telafi eder.
+# Yeni saha verisiyle güncellenmeli (işaret DAİMA gözlemlenen kısa mesafe kadar
+# pozitif — uzun düşme gözlenirse negatif de verilebilir).
+DROP_RANGE_BIAS_M          = 5.0
 # Hedef WP'lerinin (mavi+kırmızı yönlendirme öğeleri) SABİT irtifası —
 # relative, MAV_FRAME_GLOBAL_RELATIVE_ALT (2026-08-27). Tarama irtifasından
 # (daha yüksek) bu WP'ye doğru gerçek bir ALÇALMA/yaklaşma emri oluşturur —

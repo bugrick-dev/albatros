@@ -156,12 +156,14 @@ def test_wrap180_folds_into_range():
 
 def test_drop_point_is_upcourse_of_target():
     """Release noktası, hedefin rota yönünün GERİSİNDE olmalı (yük ileri
-    savrulur) ve geri ofset hız*düşüş süresi kadar olmalı."""
+    savrulur) ve geri ofset (ham balistik hız*düşüş süresi EKSİ
+    config.DROP_RANGE_BIAS_M menzil telafisi, bkz. geo.calculate_drop_point
+    2026-09-01) kadar olmalı."""
     alt, speed, course = 60.0, 10.0, 0.0   # kuzeye uçuş
     tlat, tlon = 39.0, 32.0
     rlat, rlon = geo.calculate_drop_point(tlat, tlon, alt, speed, course)
     assert rlat < tlat, "release noktası hedefin kuzeyinde (ilerisinde) çıktı"
-    expected = speed * math.sqrt(2 * alt / 9.81)
+    expected = speed * math.sqrt(2 * alt / 9.81) - config.DROP_RANGE_BIAS_M
     got = geo.haversine(tlat, tlon, rlat, rlon)
     assert abs(got - expected) < 0.5, f"geri ofset {got:.2f}m != beklenen {expected:.2f}m"
 

@@ -233,7 +233,16 @@ def calculate_drop_point(target_lat, target_lon, alt, speed_ms, yaw_deg):
     fall_time        = math.sqrt(2 * alt / g)
     horizontal_dist  = speed_ms * fall_time
     log.debug(f"[GEO][calculate_drop_point] Düşüş süresi={fall_time:.3f}s | "
-          f"yatay kayma={horizontal_dist:.2f}m")
+          f"yatay kayma (ham balistik)={horizontal_dist:.2f}m")
+
+    # Menzil telafisi (2026-09-01, bkz. config.DROP_RANGE_BIAS_M): saf balistik
+    # model sürtünme/mekanizma gecikmesini hesaba katmadığı için TUTARLI olarak
+    # hedefin gerisine düşürüyordu (saha ölçümü: ~5m kısa) — release noktasını
+    # hedefe bu kadar yaklaştırarak telafi ediyoruz. max(0, ...) çok düşük
+    # hız/irtifada (horizontal_dist zaten küçükken) negatife düşmesin diye.
+    horizontal_dist = max(0.0, horizontal_dist - config.DROP_RANGE_BIAS_M)
+    log.debug(f"[GEO][calculate_drop_point] Telafi sonrası yatay kayma="
+              f"{horizontal_dist:.2f}m (bias={config.DROP_RANGE_BIAS_M:.1f}m)")
 
     yaw_rad      = math.radians(yaw_deg)
     delta_north  = -horizontal_dist * math.cos(yaw_rad)
