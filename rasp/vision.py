@@ -63,6 +63,21 @@ def _apply_morph(mask):
 # çevrilmeli; sabit pozisyonlu HUD öğeleri (FPS, ALT, vb.) zaten stream_frame
 # üzerine çizildiği için dönüşüme ihtiyaç duymaz.
 
+def _hud_text(img, text, org, scale, color, thickness=2, font=cv2.FONT_HERSHEY_DUPLEX):
+    """
+    HUD yazısı: önce kalın SİYAH kontur, üstüne renkli metin (2026-09-02).
+    Eskiden düz putText kullanılıyordu — açık zeminde (beton pist, kum,
+    bulutlu gökyüzü) beyaz/sarı/yeşil yazı zemine karışıp okunmuyordu
+    (bkz. logs/hud_preview.jpg). Siyah kontur zeminden bağımsız kontrast
+    sağlar ve H264 blok gürültüsünde de ayakta kalır. Varsayılan font
+    DUPLEX: dolgulu harfler düşük bitrate'te tek-kalem SIMPLEX'ten daha
+    okunaklı (KILIT/SERVO satırlarında 2026-08-26'da gözlendi, artık tüm
+    HUD'a uygulandı).
+    """
+    cv2.putText(img, text, org, font, scale, (0, 0, 0), thickness + 3, cv2.LINE_AA)
+    cv2.putText(img, text, org, font, scale, color, thickness, cv2.LINE_AA)
+
+
 def _to_stream_xy(x, y):
     if config.CAMERA_ROTATION_DEG == 180:
         return config.WIDTH - 1 - x, config.HEIGHT - 1 - y
@@ -682,67 +697,71 @@ def opencv_processing_thread(queue):
                     if color in gps_data:
                         lat, lon = gps_data[color]
                         sx, sy = _to_stream_xy(data["cx"], data["cy"])
-                        cv2.putText(
-                            stream_frame, f"{color.upper()}: {lat:.6f}, {lon:.6f}",
-                            (sx - 100, sy - 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2,
-                        )
+                        _hud_text(stream_frame, f"{color.upper()}: {lat:.6f}, {lon:.6f}",
+                                  (sx - 100, sy - 20), 0.55, (0, 255, 0))
 
-            cv2.putText(stream_frame, f"FPS: {current_fps}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            # Sol üst durum bloğu: tüm satırlar _hud_text (siyah konturlu)
+            # ile, 30px satır aralığı. Renk kodu: yeşil=iyi, kırmızı=sorun,
+            # beyaz=veri, sarı=WP.
+            _hud_text(stream_frame, f"FPS: {current_fps}", (10, 30), 0.7, (0, 255, 0))
 
             if tel["alt"] is not None:
-                cv2.putText(stream_frame, f"ALT: {tel['alt']:.1f}m", (10, 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                _hud_text(stream_frame, f"ALT: {tel['alt']:.1f}m", (10, 60), 0.7, (255, 255, 255))
 
             # Anlık uçak GPS konumu (2026-08-20) — log'a bakmaya gerek kalmadan
             # HUD'dan takip edilebilsin diye. tel zaten frame anına en yakın
             # örneği taşıyor (bkz. state.nearest_telemetry_at).
             if tel["lat"] is not None and tel["lon"] is not None:
-                cv2.putText(stream_frame, f"POS: {tel['lat']:.6f}, {tel['lon']:.6f}", (10, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                _hud_text(stream_frame, f"POS: {tel['lat']:.6f}, {tel['lon']:.6f}", (10, 90),
+                          0.6, (255, 255, 255))
 
             wp = state.current_wp
             if wp["index"] is not None:
-                cv2.putText(stream_frame, f"WP: {wp['index']}/{wp['total']}", (10, 120),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                _hud_text(stream_frame, f"WP: {wp['index']}/{wp['total']}", (10, 120), 0.7, (0, 255, 255))
 
                 # Bu WP'ye GEÇİLDİĞİ ANDAKİ konum (2026-08-20) — POS'tan farkı:
                 # "şu an" değil, "bu WP'ye geçerken neredeydik" (bkz.
                 # mission.waypoint_tracking_task, state.current_wp).
                 if wp["lat"] is not None and wp["lon"] is not None:
-                    cv2.putText(
-                        stream_frame, f"WP{wp['index']} GPS: {wp['lat']:.6f}, {wp['lon']:.6f}",
-                        (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2,
-                    )
+                    _hud_text(stream_frame, f"WP{wp['index']} GPS: {wp['lat']:.6f}, {wp['lon']:.6f}",
+                              (10, 150), 0.55, (0, 255, 255))
 
             fc_ok = state.fc_connected
-            cv2.putText(
-                stream_frame,
-                f"FC: {'BAGLI' if fc_ok else 'BAGLI DEGIL'} ({config.FC_BAUDRATE})",
-                (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                (0, 255, 0) if fc_ok else (0, 0, 255), 2,
-            )
+            _hud_text(stream_frame, f"FC: {'BAGLI' if fc_ok else 'BAGLI DEGIL'} ({config.FC_BAUDRATE})",
+                      (10, 180), 0.6, (0, 255, 0) if fc_ok else (0, 0, 255))
 
             rf_ok = state.wfb_process is not None and state.wfb_process.poll() is None
-            cv2.putText(
-                stream_frame,
-                f"RF: {'OK' if rf_ok else 'KOPTU'}",
-                (10, 205), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                (0, 255, 0) if rf_ok else (0, 0, 255), 2,
-            )
+            _hud_text(stream_frame, f"RF: {'OK' if rf_ok else 'KOPTU'}",
+                      (10, 210), 0.6, (0, 255, 0) if rf_ok else (0, 0, 255))
 
+            # Rüzgar (2026-09-02): FC EKF tahmini, "geldiği yön" olarak (GCS ile
+            # aynı kural) — sahada GCS okuyla karşılaştırıp kaynağın çalıştığı
+            # HUD'dan görülsün. None = WIND mesajı hiç gelmemiş (bkz.
+            # mission.wind_track_task) → kırmızı uyarı.
+            # tel (nearest_telemetry_at) yalnızca konum/duruş taşır; rüzgar
+            # frame anına eşlenmesi gerekmeyen yavaş bir değer, doğrudan
+            # current_telemetry'den okunur.
+            with state.telemetry_lock:
+                wind_n = state.current_telemetry["wind_n"]
+                wind_e = state.current_telemetry["wind_e"]
+            if wind_n is not None and wind_e is not None:
+                wind_spd = (wind_n ** 2 + wind_e ** 2) ** 0.5
+                wind_from = (np.degrees(np.arctan2(-wind_e, -wind_n)) + 360.0) % 360.0
+                _hud_text(stream_frame, f"RUZGAR: {wind_spd:.1f}m/s {wind_from:.0f}deg'DEN",
+                          (10, 240), 0.6, (255, 255, 255))
+            else:
+                _hud_text(stream_frame, "RUZGAR: YOK", (10, 240), 0.6, (0, 0, 255))
+
+            # Sağ üst: canlı tespit göstergesi + hemen altında red nedeni.
+            # Satır aralığı 50px (2026-09-02): eskiden 30px'ti ve "RED: ..."
+            # alt satırı (pos+18) bir sonraki göstergenin üstüne biniyordu.
             for color, label, pos, col_ok, col_no in [
-                ("mavi",    "MAVI: OK",    (config.WIDTH - 160, 30), (255, 100, 0), (128, 128, 128)),
-                ("kirmizi", "KIRMIZI: OK", (config.WIDTH - 160, 60), (0, 0, 255),   (128, 128, 128)),
+                ("mavi",    "MAVI: OK",    (config.WIDTH - 200, 30), (255, 100, 0), (160, 160, 160)),
+                ("kirmizi", "KIRMIZI: OK", (config.WIDTH - 200, 80), (0, 0, 255),   (160, 160, 160)),
             ]:
                 detected = state.detected_targets[color]
-                cv2.putText(
-                    stream_frame,
-                    label if detected else label.replace("OK", "--"),
-                    pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                    col_ok if detected else col_no, 2,
-                )
+                _hud_text(stream_frame, label if detected else label.replace("OK", "--"),
+                          pos, 0.6, col_ok if detected else col_no)
                 # Canlı reddedilme nedeni (2026-08-26, bkz. state.detection_reject_reason)
                 # — MAVI/KIRMIZI göstergesinin HEMEN ALTINA, küçük punto: bir kare
                 # renk+şekil filtresini geçip GPS aşamasında reddedilirse (roll/pitch,
@@ -750,11 +769,8 @@ def opencv_processing_thread(queue):
                 # KİLİTLENİNCE (_finalize_track) temizlenir, o zaman bu satır kaybolur.
                 reason = state.detection_reject_reason[color]
                 if reason is not None:
-                    cv2.putText(
-                        stream_frame, f"RED: {reason}",
-                        (pos[0], pos[1] + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                        (0, 165, 255), 1,
-                    )
+                    _hud_text(stream_frame, f"RED: {reason}", (pos[0], pos[1] + 20),
+                              0.45, (0, 165, 255), thickness=1)
 
             # Kilitlenen hedefler (KALICI GPS + kilit anındaki WP sırası,
             # 2026-08-20/21) + gönderilen servo komutları ("SERVO AÇILDI") —
@@ -785,26 +801,22 @@ def opencv_processing_thread(queue):
             # için ayrıca büyütüldü. En uzun olası metin (WP40, 2 haneli
             # servo kanalı) 640px genişliğe hâlâ rahat sığıyor (ölçüldü:
             # ~560px < WIDTH).
-            _LOCK_FONT, _LOCK_SCALE, _LOCK_THICK = cv2.FONT_HERSHEY_DUPLEX, 0.6, 2
+            _LOCK_SCALE = 0.6
 
             for color, locked, fmt, box_color, y in _hud_slots:
                 if locked is not None:
                     lat, lon = locked
                     wp_at_lock = state.locked_target_wp[color]
-                    cv2.putText(stream_frame, fmt(lat, lon, wp_at_lock), (10, y),
-                                _LOCK_FONT, _LOCK_SCALE, box_color, _LOCK_THICK)
+                    _hud_text(stream_frame, fmt(lat, lon, wp_at_lock), (10, y), _LOCK_SCALE, box_color)
 
             for color, y in (("mavi", config.HEIGHT - 70), ("kirmizi", config.HEIGHT - 45)):
                 ev = state.servo_events[color]
                 if ev is not None:
                     lat_str = f"{ev['lat']:.6f}" if ev["lat"] is not None else "?"
                     lon_str = f"{ev['lon']:.6f}" if ev["lon"] is not None else "?"
-                    cv2.putText(
-                        stream_frame,
-                        f"SERVO ACILDI: {color.upper()} kanal={ev['channel']} @ {lat_str},{lon_str}",
-                        (10, y), _LOCK_FONT, _LOCK_SCALE,
-                        (0, 255, 0), _LOCK_THICK,
-                    )
+                    _hud_text(stream_frame,
+                              f"SERVO ACILDI: {color.upper()} kanal={ev['channel']} @ {lat_str},{lon_str}",
+                              (10, y), _LOCK_SCALE, (0, 255, 0))
 
             try:
                 _encode_queue.put_nowait(stream_frame.tobytes())
