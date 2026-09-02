@@ -413,7 +413,40 @@ DROP_WIND_ALONG_GAIN       = 0.6
 # varsayıldı — gerçek değer muhtemelen biraz daha yüksek (çünkü aynı
 # rüzgarın bir kısmı along'a da gitti). Yeni uçuşta rüzgar_n/rüzgar_e
 # log'undan kesin ayrıştırma yapılıp ikisi birlikte düzeltilmeli.
+#
+# GÜNCELLEME (2026-09-02, akşam): bu kazanç artık İKİ yerde kullanılıyor —
+# (a) geo.calculate_drop_point lateral_offset (drop_trigger_task'ın release
+# noktası), (b) geo.wind_shifted_nav_point: FC'ye giden hedef NAV_WAYPOINT'in
+# kendisi rüzgarın geldiği yöne bu kazançla kaydırılıyor. (a) tek başına
+# sahada HİÇ etki etmiyordu: uçak WP'den geçen düz çizgide uçarken bırakma
+# ANI değiştirilerek çizgiye dik (sağ/sol) düzeltme üretilemez — "sola atma"
+# bu yüzden 3977b82 sonrası da sürdü. İkisi AYNI kazancı kullanmalı ki
+# release noktası uçağın kaydırılmış çizgisi üzerine düşsün (cross≈0),
+# ayrıntı: geo.wind_shifted_nav_point docstring.
 DROP_WIND_CROSS_GAIN       = 0.4
+# Hedef WP'sinin rüzgar kaydırmasına üst sınır, metre (2026-09-02, bkz.
+# geo.wind_shifted_nav_point). Tipik değerler küçük: 4.7m/s rüzgar ×
+# 2.26s düşüş × 0.4 ≈ 4.3m. EKF rüzgar tahmini bozuk/aşırı çıkarsa
+# (ör. ~11m/s üstü) WP hedeften bu değerden fazla uzaklaşmaz —
+# DROP_MAX_CROSS_TRACK_M (15m) ve şartnamenin 20m bütçesinin altında
+# tutuldu; sınır devreye girerse telafi kısmi kalır (log'da uyarı basılır).
+DROP_WP_WIND_SHIFT_MAX_M   = 10.0
+# --- Rüzgar kaynağı (2026-09-02, bkz. mission.wind_track_task) ---
+# ArduPilot'un WIND (id 168) mesajı SET_MESSAGE_INTERVAL ile bu hızda
+# istenir. EKF tahmini zaten yavaş değişir, 2Hz yeterli.
+WIND_STREAM_HZ             = 2.0
+# İlk WIND örneği bu süre içinde gelmezse log'a yüksek sesle uyarı basılır
+# (bugünkü 3 uçuşta rüzgar sessizce 0.0 kaldı — bir daha fark edilmeden
+# geçmesin). Akış sonradan kesilirse de aynı süreyle uyarır.
+WIND_FIRST_SAMPLE_TIMEOUT_S = 30.0
+# Her N örnekte bir rüzgar değeri loglanır (2Hz → ~10s'de bir).
+WIND_LOG_EVERY_N           = 20
+# ELLE rüzgar girişi (uçuş öncesi, GCS rüzgar okumasından ya da saha
+# ölçümünden): ikisi de doluysa FC'nin EKF tahmini YOK SAYILIR. Kural GCS
+# ile aynı: FROM_DEG = rüzgarın GELDİĞİ yön (0=kuzey, 90=doğu; poyraz ≈ 45),
+# SPEED_MS = m/s (km/h ÷ 3.6). Normalde None bırakılır → FC tahmini.
+WIND_MANUAL_FROM_DEG       = None
+WIND_MANUAL_SPEED_MS       = None
 # Hedef WP'lerinin (mavi+kırmızı yönlendirme öğeleri) SABİT irtifası —
 # relative, MAV_FRAME_GLOBAL_RELATIVE_ALT (2026-08-27). Tarama irtifasından
 # (daha yüksek) bu WP'ye doğru gerçek bir ALÇALMA/yaklaşma emri oluşturur —
@@ -524,6 +557,8 @@ CMD_CONDITION_DIST   = 114
 CMD_DO_JUMP          = 177
 CMD_DO_CHANGE_SPEED  = 178
 CMD_DO_SET_SERVO     = 183
+CMD_SET_MESSAGE_INTERVAL = 511   # MAV_CMD_SET_MESSAGE_INTERVAL (bkz. mission.wind_track_task)
+MAVLINK_MSG_ID_WIND  = 168       # ardupilotmega WIND mesajı (direction=geldiği yön°, speed m/s)
 CMD_RTL              = 20
 
 # --- Orbit test parametreleri (bkz. tests/test_mission_orbit_swap.py) ---

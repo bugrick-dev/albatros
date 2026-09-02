@@ -127,21 +127,142 @@ async def speed_track_task(drone):
             state.speed_history.append((now, speed, vel.north_m_s, vel.east_m_s))
 
 
+def _make_message_interval_command(msg_id, interval_us):
+    """COMMAND_LONG / SET_MESSAGE_INTERVAL: FC'den belirli bir MAVLink mesajını
+    verilen periyotla (µs) yayınlamasını ister (bkz. wind_track_task)."""
+    return MavlinkMessage(
+        message_name="COMMAND_LONG",
+        system_id=255,
+        component_id=190,
+        target_system_id=1,
+        target_component_id=1,
+        fields_json=json.dumps({
+            "target_system": 1,
+            "target_component": 1,
+            "command": config.CMD_SET_MESSAGE_INTERVAL,
+            "confirmation": 0,
+            "param1": float(msg_id),
+            "param2": float(interval_us),
+            "param3": 0.0, "param4": 0.0, "param5": 0.0, "param6": 0.0, "param7": 0.0,
+        })
+    )
+
+
+def _wind_from_to_ned(direction_from_deg, speed_ms):
+    """ArduPilot WIND mesajı (direction = rüzgarın GELDİĞİ yön, derece, 0=kuzey;
+    speed m/s) → hava kütlesinin GİTTİĞİ yön vektörü (wind_n, wind_e) m/s.
+    geo.calculate_drop_point / wind_shifted_nav_point bu 'gittiği yön'
+    (NED hız) kuralını bekler — işaret burada ters çevrilir."""
+    r = math.radians(direction_from_deg)
+    return -speed_ms * math.cos(r), -speed_ms * math.sin(r)
+
+
 async def wind_track_task(drone):
     """
     FC'nin (ArduPilot EKF) rüzgar tahminini sürekli günceller (2026-09-02) —
-    calculate_drop_point()'in ters/yanal rüzgarı telafi edebilmesi için
+    calculate_drop_point()'in ters/yanal rüzgarı telafi edebilmesi ve
+    _build_drop_items'ın hedef WP'lerini rüzgara karşı kaydırabilmesi için
     (bkz. config.DROP_WIND_ALONG_GAIN/DROP_WIND_CROSS_GAIN). Anlık yer hızı
-    (speed_track_task) eksi hava hızı (airspeed) farkını KENDİMİZ hesaplamak
-    yerine MAVSDK'nın zaten sunduğu, EKF'nin zaman içinde filtrelediği
-    telemetry.wind()'i kullanıyoruz — dönüşlerde sideslip nedeniyle anlık
+    eksi hava hızı farkını KENDİMİZ hesaplamak yerine EKF'nin zaman içinde
+    filtrelediği tahmini kullanıyoruz — dönüşlerde sideslip nedeniyle anlık
     GS-TAS farkının gürültülü olmasından kaçınmak için.
+
+    KAYNAK DEĞİŞİKLİĞİ (2026-09-02 akşam): eskiden MAVSDK telemetry.wind()
+    kullanılıyordu; bu MAVLink WIND_COV mesajından beslenir ve ArduPilot
+    WIND_COV GÖNDERMEZ (PX4 gönderir). Sonuç: bugünkü 3 uçuşun 21 tetik
+    tik'inin HEPSİNDE rüzgar_n=rüzgar_e=0.0 loglandı — rüzgar telafisi
+    (along+cross) deploy edildiği günden beri fiilen DEVRE DIŞIYDI, "sola
+    atma"nın 3977b82 sonrası da sürmesinin bir nedeni bu. ArduPilot'un
+    gerçekten yayınladığı mesaj WIND (id 168, ardupilotmega): direction =
+    rüzgarın GELDİĞİ yön (derece), speed (m/s), speed_z. mavlink_direct ile
+    doğrudan buna abone oluyoruz ve _wind_from_to_ned ile "gittiği yön"
+    NED vektörüne çeviriyoruz (GCS'in rüzgar okuyla aynı kural: Mission
+    Planner 'Wind 45° 5m/s' = kuzeydoğuDAN esiyor → wind_n,wind_e negatif).
+
+    Başlangıçta SET_MESSAGE_INTERVAL ile WIND'i WIND_STREAM_HZ'de ister
+    (varsayılan SRx_EXTRA3 akış hızı düşük/kapalı olabilir; zaten
+    akıyorsa zararsız). İlk örnek WIND_FIRST_SAMPLE_TIMEOUT_S içinde
+    gelmezse yüksek sesle uyarır — sessiz 0.0 bir daha olmasın diye.
+    Ayrıca her WIND_LOG_EVERY_N örnekte bir değer loglanır ki uçuş
+    sonrası log'dan rüzgarın gerçekten okunduğu görülsün.
+
+    config.WIND_MANUAL_FROM_DEG/WIND_MANUAL_SPEED_MS doluysa FC tahmini
+    YOK SAYILIR ve sabit elle girilen değer kullanılır (saha ölçümü / EKF
+    tahmini güvenilmezse; uçuş öncesi GCS rüzgar okumasıyla girilir).
     """
-    log.info("[WIND] Rüzgar tahmini akışı başlatıldı")
-    async for wind in drone.telemetry.wind():
+    if config.WIND_MANUAL_FROM_DEG is not None and config.WIND_MANUAL_SPEED_MS is not None:
+        wind_n, wind_e = _wind_from_to_ned(config.WIND_MANUAL_FROM_DEG, config.WIND_MANUAL_SPEED_MS)
         with state.telemetry_lock:
-            state.current_telemetry["wind_n"] = wind.wind_x_ned_m_s
-            state.current_telemetry["wind_e"] = wind.wind_y_ned_m_s
+            state.current_telemetry["wind_n"] = wind_n
+            state.current_telemetry["wind_e"] = wind_e
+        log.info(f"[WIND] ELLE GİRİLEN rüzgar kullanılıyor (FC tahmini yok sayılıyor): "
+                 f"{config.WIND_MANUAL_SPEED_MS:.1f}m/s, {config.WIND_MANUAL_FROM_DEG:.0f}°'DEN "
+                 f"→ wind_n={wind_n:+.1f} wind_e={wind_e:+.1f} m/s")
+        return
+
+    try:
+        await drone.mavlink_direct.send_message(_make_message_interval_command(
+            config.MAVLINK_MSG_ID_WIND, int(1_000_000 / config.WIND_STREAM_HZ)))
+        log.info(f"[WIND] FC'den WIND mesajı {config.WIND_STREAM_HZ:.0f}Hz istendi (SET_MESSAGE_INTERVAL)")
+    except Exception as e:
+        log.info(f"[WIND] ⚠ SET_MESSAGE_INTERVAL gönderilemedi: {e} — varsayılan akış hızına güveniliyor")
+
+    log.info("[WIND] Rüzgar tahmini akışı başlatıldı (MAVLink WIND, mavlink_direct)")
+    started = time.monotonic()
+    stats = {"count": 0, "last_t": None}
+
+    # Sessizlik bekçisi AYRI görevde: akışın kendisini wait_for ile
+    # zamanlamak olmaz — timeout'ta iptal edilen anext() mavlink_direct
+    # generator'ının finally bloğunu tetikleyip gRPC aboneliğini kapatır.
+    async def _watchdog():
+        while True:
+            await asyncio.sleep(config.WIND_FIRST_SAMPLE_TIMEOUT_S)
+            if stats["count"] == 0:
+                log.info(f"[WIND] ⚠ {time.monotonic() - started:.0f}s'dir hiç WIND mesajı gelmedi — "
+                         f"FC rüzgar tahmini yayınlamıyor olabilir (SRx_EXTRA3 / EKF). Rüzgar "
+                         f"telafisi ve WP kaydırması bu uçuşta DEVRE DIŞI kalacak!")
+            elif time.monotonic() - stats["last_t"] > config.WIND_FIRST_SAMPLE_TIMEOUT_S:
+                log.info(f"[WIND] ⚠ WIND akışı {time.monotonic() - stats['last_t']:.0f}s'dir sessiz "
+                         f"(son değer kullanılmaya devam ediyor)")
+
+    watchdog = asyncio.create_task(_watchdog())
+    # Bu görev main.py'de asyncio.gather içinde diğerleriyle birlikte koşuyor
+    # (return_exceptions YOK): buradan kaçan bir istisna gather'ı düşürür ve
+    # main'in finally'si UÇUŞ ORTASINDA tüm sistemi kapatır. Rüzgar
+    # yardımcı bir bilgidir — kaynağı ne olursa olsun burada yutulur, rüzgar
+    # None kalır (build_and_start_drop_mission bunu loglayıp kaydırmasız
+    # devam eder).
+    try:
+        async for msg in drone.mavlink_direct.message("WIND"):
+            try:
+                f = json.loads(msg.fields_json)
+                direction_from = float(f["direction"])
+                speed = float(f["speed"])
+            except (KeyError, ValueError, TypeError) as e:
+                log.info(f"[WIND] ⚠ WIND mesajı çözümlenemedi: {e} — {msg.fields_json!r}")
+                continue
+
+            wind_n, wind_e = _wind_from_to_ned(direction_from, speed)
+            with state.telemetry_lock:
+                state.current_telemetry["wind_n"] = wind_n
+                state.current_telemetry["wind_e"] = wind_e
+            stats["count"] += 1
+            stats["last_t"] = time.monotonic()
+            if stats["count"] == 1:
+                log.info(f"[WIND] ✓ İlk WIND örneği (+{stats['last_t'] - started:.0f}s): "
+                         f"{speed:.1f}m/s {direction_from:.0f}°'DEN esiyor → "
+                         f"wind_n={wind_n:+.1f} wind_e={wind_e:+.1f} m/s")
+            elif stats["count"] % config.WIND_LOG_EVERY_N == 0:
+                log.info(f"[WIND] #{stats['count']}: {speed:.1f}m/s {direction_from:.0f}°'DEN → "
+                         f"wind_n={wind_n:+.1f} wind_e={wind_e:+.1f}")
+        log.info("[WIND] ⚠ WIND akışı sonlandı")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.info(f"[WIND] ⚠ WIND aboneliği HATA verdi: {e!r} — rüzgar telafisi bu uçuşta devre dışı "
+                 f"(sistem çalışmaya devam ediyor)")
+    finally:
+        watchdog.cancel()
 
 
 async def gps_health_task(drone):
@@ -409,7 +530,7 @@ def _make_return_to_search_entry_item(existing):
     )
 
 
-def _build_drop_items(release_points):
+def _build_drop_items(release_points, wind_n=0.0, wind_e=0.0):
     """
     Hedeflere YÖNLENDİRME waypoint'lerini oluşturur (sade NAV_WAYPOINT —
     direkt WP'ye gidilir, servo AÇMA burada değil). Asıl drop tetikleme
@@ -439,16 +560,33 @@ def _build_drop_items(release_points):
     tırmanış/DALIŞ komutu üretebilir (2026-08-09: sahada gözlenen ani dalış
     sonrası bulunup DEĞİL rp["alt"] KULLANILMAYARAK düzeltildi — sabit
     DROP_TARGET_ALT_M bu riski taşımıyor, telemetriden bağımsız).
+
+    Rüzgar kaydırması (2026-09-02, "sola atma" düzeltmesi): WP koordinatı
+    artık ham hedef DEĞİL, geo.wind_shifted_nav_point() ile o anki EKF
+    rüzgar tahminine göre rüzgarın GELDİĞİ yöne kaydırılmış nokta
+    (rp["nav_lat"/"nav_lon"]). rp["lat"/"lon"] ham hedef olarak KALIR —
+    drop_trigger_task bırakma anını hâlâ ham hedefe göre hesaplar (release
+    noktası zaten aynı rüzgarla kaydırılıyor, ikisi tutarlı; neden çift
+    telafi olmadığı geo.wind_shifted_nav_point docstring'inde). Misyon uçuşta
+    yeniden yüklenemediği için bu tek seferlik bir anlık görüntüdür; rüzgar
+    sonradan değişirse fark drop_trigger_task'ın cross kontrolüne yansır.
     """
     items = []
     for i, rp in enumerate(release_points):
+        nav_lat, nav_lon, shift_n, shift_e = geo.wind_shifted_nav_point(
+            rp["lat"], rp["lon"], config.DROP_TARGET_ALT_M, wind_n=wind_n, wind_e=wind_e,
+        )
+        rp["nav_lat"], rp["nav_lon"] = nav_lat, nav_lon
         log.info(f"[MISSION] === Yönlendirme öğesi: Hedef {i+1} {rp['color'].upper()} "
               f"({rp['lat']:.6f},{rp['lon']:.6f}) tespit-anı-irtifası={rp['alt']:.1f}m "
               f"| WP irtifası (sabit, yaklaşma)={config.DROP_TARGET_ALT_M:.1f}m ===")
+        log.info(f"[MISSION]     rüzgar kaydırması: kuzey={shift_n:+.1f}m doğu={shift_e:+.1f}m "
+                 f"(|{math.hypot(shift_n, shift_e):.1f}m|, rüzgar_n={wind_n:.1f} rüzgar_e={wind_e:.1f} m/s) "
+                 f"→ WP ({nav_lat:.6f},{nav_lon:.6f})")
 
         items.append(_make_mission_item(
             0, config.CMD_NAV_WAYPOINT, param2=config.DROP_WP_ACCEPT_RADIUS_M,
-            lat=rp["lat"], lon=rp["lon"], alt=config.DROP_TARGET_ALT_M, frame=3,
+            lat=nav_lat, lon=nav_lon, alt=config.DROP_TARGET_ALT_M, frame=3,
         ))
     return items
 
@@ -530,7 +668,19 @@ async def build_and_start_drop_mission(drone, release_points):
     # Drop yaklaşma waypoint'leri artık SABİT config.DROP_TARGET_ALT_M taşıyor
     # (yere yaklaşma davranışı) — GCS planındaki SEARCH_START_WP irtifasını
     # DEVRALMIYOR, bkz. _build_drop_items docstring.
-    drop_items = _build_drop_items(release_points)
+    # Rüzgar anlık görüntüsü (2026-09-02): hedef WP'leri rüzgarın geldiği yöne
+    # kaydırılıyor (bkz. _build_drop_items / geo.wind_shifted_nav_point).
+    # wind_track_task main.py'de baştan beri koşuyor, normalde dolu; hiç
+    # örnek gelmediyse kaydırma yapılmaz (0) ve yüksek sesle loglanır —
+    # sessizce eski (kaydırmasız) davranışa düşmek yerine.
+    with state.telemetry_lock:
+        wind_n = state.current_telemetry["wind_n"]
+        wind_e = state.current_telemetry["wind_e"]
+    if wind_n is None or wind_e is None:
+        log.info("[MISSION] ⚠ EKF rüzgar tahmini yok (telemetry.wind hiç örnek vermedi) — "
+                 "hedef WP'leri rüzgara göre KAYDIRILMADI, yanal telafi bu uçuşta devre dışı")
+        wind_n, wind_e = 0.0, 0.0
+    drop_items = _build_drop_items(release_points, wind_n=wind_n, wind_e=wind_e)
     log.info(f"[MISSION] {len(drop_items)} drop öğesi oluşturuldu "
              f"| hedef irtifası={config.DROP_TARGET_ALT_M:.1f}m (sabit, yaklaşma)")
 

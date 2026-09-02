@@ -291,3 +291,73 @@ def calculate_drop_point(target_lat, target_lon, alt, speed_ms, yaw_deg, wind_n=
     log.debug(f"[GEO][calculate_drop_point] Release point: ({release_lat:.6f}, {release_lon:.6f})")
 
     return release_lat, release_lon
+
+
+def wind_shifted_nav_point(target_lat, target_lon, alt, wind_n=0.0, wind_e=0.0):
+    """
+    Hedef WP'sinin (FC'ye giden NAV_WAYPOINT) rüzgara karşı kaydırılmış
+    konumunu döner (2026-09-02, "sola atma" düzeltmesi). Dönüş:
+    (nav_lat, nav_lon, shift_n, shift_e) — shift'ler metre, kuzey/doğu.
+
+    NEDEN GEREKLİ: calculate_drop_point() rüzgarı telafi eden release
+    noktasını hesaplıyor ama bu nokta yalnızca drop_trigger_task'ın "ne
+    zaman bırak" kararında kullanılıyor — uçağın FİİLEN uçtuğu çizgi hâlâ
+    HAM hedef koordinatından geçiyor (ArduPilot L1 önceki WP'den bu WP'ye
+    düz çizgi izler). Sabit bir çizgi üzerinde bırakma ANI değiştirilerek
+    çizgiye DİK (sağ/sol) bir düzeltme üretilemez; yanal rüzgar telafisi bu
+    yüzden sahada hiç etki göstermiyordu. Tek gerçek düzeltme, uçağın
+    çizgisini kaydırmak = WP koordinatını kaydırmak. Misyon uçuş sırasında
+    yeniden yüklenemiyor (upload uzun sürüyor), bu yüzden kaydırma misyon
+    kurulurken TEK SEFER, o anki EKF rüzgar tahminiyle yapılır.
+
+    NEDEN ROTADAN BAĞIMSIZ (along/cross'a ayrıştırılmadan TÜM rüzgar
+    vektörü, rüzgarın geldiği yöne = ters yöne kaydırma): bırakılan yükün
+    düşüş boyunca rüzgarla sürüklenmesi yer çerçevesinde rota'dan bağımsız
+    bir vektördür. Bu vektörün rotaya DİK izdüşümü, uçak hangi yönden
+    yaklaşırsa yaklaşsın, calculate_drop_point()'in aynı rüzgarla hesapladığı
+    lateral_offset'e eşittir — yani WP'yi bu vektörle kaydırınca
+    drop_trigger_task'ın release noktası uçağın yeni çizgisi ÜZERİNE düşer
+    (cross≈0) ve çift telafi olmaz. Rotaya ayrıştırarak kaydırmak için
+    yaklaşma rotasını ÖNCEDEN bilmek gerekirdi; ilk geçişte bu "önceki WP →
+    hedef" kerterizinden tahmin edilebilir ama DO_JUMP tekrar geçişlerinde
+    (bkz. mission._make_drop_retry_jump_item) uçak hedefe BAŞKA yönden
+    gelir ve tahmin çöker — rotadan bağımsız kaydırma her geçişte geçerli.
+
+    Kaydırmanın rota YÖNÜNDEKİ bileşeni (≤ birkaç metre) bırakma
+    zamanlamasını ETKİLEMEZ: drop_trigger_task ham hedef (rp["lat"/"lon"])
+    ile uçağın anlık konumuna göre ateşliyor, WP'nin nerede "ulaşıldı"
+    sayıldığından bağımsız; release ~25-30m hedef ÖNCESİNDE olduğu için
+    DROP_WP_ACCEPT_RADIUS_M ile birleşse bile WP'ye ulaşma tetikten sonra
+    kalır.
+
+    Büyüklük DROP_WP_WIND_SHIFT_MAX_M ile sınırlanır — EKF rüzgar tahmini
+    bozuksa WP'nin hedeften uzağa fırlamasını önlemek için (sınır devreye
+    girerse telafi kısmi kalır, drop_trigger_task'ın cross kontrolü farkı
+    görür).
+    """
+    g         = 9.81
+    alt       = max(alt, 1.0)
+    fall_time = math.sqrt(2 * alt / g)
+
+    # Rüzgar (hava kütlesinin yer'e göre hızı, NED) yükü sürükler → WP'yi
+    # tam ters yöne, rüzgarın GELDİĞİ tarafa kaydır. Kazanç
+    # calculate_drop_point()'in lateral_offset'iyle AYNI olmalı (yukarıdaki
+    # "çizgi üzerine düşer" argümanı buna dayanıyor).
+    shift_n = -wind_n * fall_time * config.DROP_WIND_CROSS_GAIN
+    shift_e = -wind_e * fall_time * config.DROP_WIND_CROSS_GAIN
+
+    magnitude = math.hypot(shift_n, shift_e)
+    if magnitude > config.DROP_WP_WIND_SHIFT_MAX_M:
+        scale = config.DROP_WP_WIND_SHIFT_MAX_M / magnitude
+        log.info(f"[GEO][wind_shifted_nav_point] ⚠ WP kaydırması {magnitude:.1f}m > "
+                 f"DROP_WP_WIND_SHIFT_MAX_M={config.DROP_WP_WIND_SHIFT_MAX_M:.1f}m — "
+                 f"sınıra kırpıldı (rüzgar tahmini şüpheli olabilir)")
+        shift_n *= scale
+        shift_e *= scale
+
+    nav_lat = target_lat + (shift_n / 111320)
+    nav_lon = target_lon + (shift_e / (111320 * math.cos(math.radians(target_lat))))
+    log.debug(f"[GEO][wind_shifted_nav_point] Hedef ({target_lat:.6f},{target_lon:.6f}) "
+              f"wind_n={wind_n:.1f} wind_e={wind_e:.1f} fall_time={fall_time:.2f}s → "
+              f"shift kuzey={shift_n:.2f}m doğu={shift_e:.2f}m → nav ({nav_lat:.6f},{nav_lon:.6f})")
+    return nav_lat, nav_lon, shift_n, shift_e
