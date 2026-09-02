@@ -220,13 +220,28 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     return target_lat, target_lon
 
 
-def calculate_drop_point(target_lat, target_lon, alt, speed_ms, yaw_deg):
+def calculate_drop_point(target_lat, target_lon, alt, speed_ms, yaw_deg, wind_n=0.0, wind_e=0.0):
     """
     Balistik hesap: hedefe isabet etmek için yükün bırakılması gereken
     GPS noktasını (release point) döner.
+
+    wind_n/wind_e (2026-09-02): FC'nin EKF rüzgar tahmini (bkz.
+    mission.wind_track_task, MAVSDK telemetry.wind()), NED kuzey/doğu m/s.
+    Saha gözlemi: DROP_RANGE_BIAS_M'nin (2026-09-01, sabit 5m) sıfır/hafif
+    rüzgarda ölçüldüğü koşulun ÜSTÜNDE bir rüzgarda (~17km/h) yükler HÂLÂ
+    tutarlı biçimde ~6-7m geriye (hedefe ulaşamadan) düşüyordu — sabit bias
+    rüzgara göre ölçeklenmiyordu. Sebep: bırakılan yükün itki/kaldırması
+    yok, sürtünme onu zamanla YERE GÖRE SIFIRA değil RÜZGAR HIZINA doğru
+    yavaşlatıyor — ters rüzgar (headwind) ne kadar güçlüyse yük o kadar
+    erken/fazla yavaşlayıp ham "hız×düşüş süresi" tahmininin gerisinde
+    kalıyor (ve tam tersi, arka rüzgarda daha az yavaşlıyor). Yanal
+    (cross) rüzgar bileşeni ise düşüş boyunca yükü rotanın YANINA doğru
+    sürüklüyor — eskiden bu eksendeki telafi HİÇ yoktu (yalnızca ileri/geri
+    ofset vardı), "sol geri düşme" şikayetinin yanal kısmı bu.
     """
     log.debug(f"[GEO][calculate_drop_point] Hedef: ({target_lat:.6f},{target_lon:.6f}) "
-          f"alt={alt:.1f}m hız={speed_ms:.1f}m/s yaw={yaw_deg:.1f}°")
+          f"alt={alt:.1f}m hız={speed_ms:.1f}m/s yaw={yaw_deg:.1f}° "
+          f"wind_n={wind_n:.1f} wind_e={wind_e:.1f}")
 
     g                = 9.81
     alt              = max(alt, 1.0)   # yerde test: alt=0 sqrt hatası önle
@@ -235,19 +250,41 @@ def calculate_drop_point(target_lat, target_lon, alt, speed_ms, yaw_deg):
     log.debug(f"[GEO][calculate_drop_point] Düşüş süresi={fall_time:.3f}s | "
           f"yatay kayma (ham balistik)={horizontal_dist:.2f}m")
 
-    # Menzil telafisi (2026-09-01, bkz. config.DROP_RANGE_BIAS_M): saf balistik
-    # model sürtünme/mekanizma gecikmesini hesaba katmadığı için TUTARLI olarak
-    # hedefin gerisine düşürüyordu (saha ölçümü: ~5m kısa) — release noktasını
-    # hedefe bu kadar yaklaştırarak telafi ediyoruz. max(0, ...) çok düşük
-    # hız/irtifada (horizontal_dist zaten küçükken) negatife düşmesin diye.
-    horizontal_dist = max(0.0, horizontal_dist - config.DROP_RANGE_BIAS_M)
-    log.debug(f"[GEO][calculate_drop_point] Telafi sonrası yatay kayma="
-              f"{horizontal_dist:.2f}m (bias={config.DROP_RANGE_BIAS_M:.1f}m)")
+    yaw_rad = math.radians(yaw_deg)
+    # Rota (course) doğrultusu birim vektörü (kuzey, doğu) ve onun SAĞINA
+    # dik birim vektör — rüzgarı bu ikisine izdüşürüp ileri/geri (along) ve
+    # yanal (cross) bileşenlerine ayırmak için.
+    course_n, course_e = math.cos(yaw_rad), math.sin(yaw_rad)
+    right_n,  right_e  = -math.sin(yaw_rad), math.cos(yaw_rad)
+    wind_along = wind_n * course_n + wind_e * course_e   # + : arka rüzgar (tailwind)
+    wind_cross = wind_n * right_n  + wind_e * right_e    # + : rota sağına doğru esiyor
 
-    yaw_rad      = math.radians(yaw_deg)
-    delta_north  = -horizontal_dist * math.cos(yaw_rad)
-    delta_east   = -horizontal_dist * math.sin(yaw_rad)
-    log.debug(f"[GEO][calculate_drop_point] Geri ofset: kuzey={delta_north:.2f}m doğu={delta_east:.2f}m")
+    # Menzil telafisi (2026-09-01, bkz. config.DROP_RANGE_BIAS_M — rüzgarsız
+    # taban değer) + rüzgara bağlı EK telafi (2026-09-02, config.DROP_WIND_ALONG_GAIN):
+    # ters rüzgarda (wind_along < 0) yük daha da erken yavaşlayıp kısa
+    # düşer → release noktasını hedefe DAHA da yaklaştır (reduction artar).
+    # max(0, ...) çok düşük hız/irtifada (horizontal_dist zaten küçükken)
+    # negatife düşmesin diye.
+    range_reduction = config.DROP_RANGE_BIAS_M + (-wind_along) * fall_time * config.DROP_WIND_ALONG_GAIN
+    horizontal_dist = max(0.0, horizontal_dist - range_reduction)
+    log.debug(f"[GEO][calculate_drop_point] Telafi sonrası yatay kayma="
+              f"{horizontal_dist:.2f}m (taban_bias={config.DROP_RANGE_BIAS_M:.1f}m "
+              f"rüzgar_along={wind_along:.1f}m/s → toplam_reduction={range_reduction:.2f}m)")
+
+    # Yanal (cross) rüzgar telafisi (2026-09-02): rüzgar rotanın SAĞINA
+    # doğru esiyorsa (wind_cross > 0) yük düşerken sağa sürüklenir — bunu
+    # telafi etmek için release noktasını SOLA kaydırıyoruz (işaret ters),
+    # rüzgar geldiği yönden "karşılamak" için. DROP_WIND_CROSS_GAIN henüz
+    # tek bir along-track saha ölçümünden (17km/h rüzgar, ~6-7m kısa düşme)
+    # türetildi — yanal bileşen AYRI doğrulanmadı, sahada gözlemlenen
+    # sol/sağ sapma miktarına göre ayrıca kalibre edilmeli.
+    lateral_offset = -wind_cross * fall_time * config.DROP_WIND_CROSS_GAIN
+    log.debug(f"[GEO][calculate_drop_point] Yanal telafi: rüzgar_cross={wind_cross:.1f}m/s "
+              f"→ lateral_offset={lateral_offset:.2f}m (sağı + kabul eder)")
+
+    delta_north = -horizontal_dist * course_n + lateral_offset * right_n
+    delta_east  = -horizontal_dist * course_e + lateral_offset * right_e
+    log.debug(f"[GEO][calculate_drop_point] Toplam ofset: kuzey={delta_north:.2f}m doğu={delta_east:.2f}m")
 
     release_lat = target_lat + (delta_north / 111320)
     release_lon = target_lon + (delta_east  / (111320 * math.cos(math.radians(target_lat))))

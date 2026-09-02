@@ -127,6 +127,23 @@ async def speed_track_task(drone):
             state.speed_history.append((now, speed, vel.north_m_s, vel.east_m_s))
 
 
+async def wind_track_task(drone):
+    """
+    FC'nin (ArduPilot EKF) rüzgar tahminini sürekli günceller (2026-09-02) —
+    calculate_drop_point()'in ters/yanal rüzgarı telafi edebilmesi için
+    (bkz. config.DROP_WIND_ALONG_GAIN/DROP_WIND_CROSS_GAIN). Anlık yer hızı
+    (speed_track_task) eksi hava hızı (airspeed) farkını KENDİMİZ hesaplamak
+    yerine MAVSDK'nın zaten sunduğu, EKF'nin zaman içinde filtrelediği
+    telemetry.wind()'i kullanıyoruz — dönüşlerde sideslip nedeniyle anlık
+    GS-TAS farkının gürültülü olmasından kaçınmak için.
+    """
+    log.info("[WIND] Rüzgar tahmini akışı başlatıldı")
+    async for wind in drone.telemetry.wind():
+        with state.telemetry_lock:
+            state.current_telemetry["wind_n"] = wind.wind_x_ned_m_s
+            state.current_telemetry["wind_e"] = wind.wind_y_ned_m_s
+
+
 async def gps_health_task(drone):
     """
     Uydu sayısı/fix tipi + EKF-eşdeğeri (Health) durumunu izler ve loglar
@@ -241,12 +258,15 @@ async def drop_trigger_task(drone, release_points, landing_start_seq=None):
             continue
 
         course_deg = math.degrees(math.atan2(tel["vel_e"], tel["vel_n"]))
+        wind_n = tel["wind_n"] or 0.0
+        wind_e = tel["wind_e"] or 0.0
 
         for rp in release_points:
             if rp["dropped"]:
                 continue
             release_lat, release_lon = geo.calculate_drop_point(
                 rp["lat"], rp["lon"], pos.relative_altitude_m, tel["speed"], course_deg,
+                wind_n=wind_n, wind_e=wind_e,
             )
             dist = geo.haversine(pos.latitude_deg, pos.longitude_deg, release_lat, release_lon)
 
@@ -269,7 +289,8 @@ async def drop_trigger_task(drone, release_points, landing_start_seq=None):
             time_to = along / tel["speed"]
 
             log.info(f"[DROP] {rp['color'].upper()} along={along:.1f}m cross={cross:.1f}m "
-                     f"t={time_to:.2f}s (hız={tel['speed']:.1f}m/s alt={pos.relative_altitude_m:.1f}m)")
+                     f"t={time_to:.2f}s (hız={tel['speed']:.1f}m/s alt={pos.relative_altitude_m:.1f}m "
+                     f"rüzgar_n={wind_n:.1f} rüzgar_e={wind_e:.1f})")
 
             passed = rp["prev_along"] is not None and rp["prev_along"] > 0 and along <= 0
             rp["prev_along"] = along

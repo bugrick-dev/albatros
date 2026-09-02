@@ -155,6 +155,7 @@ async def run():
     log.info(f"  Tarama sonrası bekleme : {config.SCAN_EXIT_DELAY_SEC}s")
     log.info(f"  Tarama bacağı sonu WP  : {config.SEARCH_LOOP_EXIT_WP}")
     log.info(f"  Drop tetik mesafesi    : {config.DROP_TRIGGER_RADIUS_M}m")
+    log.info(f"  Rüzgar telafi kazancı  : along={config.DROP_WIND_ALONG_GAIN} cross={config.DROP_WIND_CROSS_GAIN}")
     log.info("=" * 60 + "\n")
 
     try:
@@ -163,6 +164,7 @@ async def run():
             mission.telemetry_task(drone),
             mission.attitude_task(drone),
             mission.speed_track_task(drone),
+            mission.wind_track_task(drone),
             mission.gps_health_task(drone),
             mission.mission_task(drone, state.target_queue),
             mission.detection_activation_task(drone),

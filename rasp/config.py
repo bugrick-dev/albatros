@@ -369,7 +369,51 @@ DROP_MAX_CROSS_TRACK_M     = 15.0
 # bu kadar metre azaltıp release noktasını hedefe yaklaştırarak telafi eder.
 # Yeni saha verisiyle güncellenmeli (işaret DAİMA gözlemlenen kısa mesafe kadar
 # pozitif — uzun düşme gözlenirse negatif de verilebilir).
+#
+# GÜNCELLEME (2026-09-02): bu artık yalnızca RÜZGARSIZ/hafif rüzgar TABAN
+# değeri — DROP_WIND_ALONG_GAIN ile birlikte kullanılıyor (bkz. aşağı ve
+# geo.calculate_drop_point). Saha gözlemi: ~17km/h rüzgarda bu 5m'lik sabit
+# TEK BAŞINA yetmiyor, yükler hâlâ ~6-7m geriye (hedefe ulaşamadan)
+# düşüyordu — sabit değer rüzgara göre ölçeklenmiyordu.
 DROP_RANGE_BIAS_M          = 5.0
+# Rüzgara bağlı EK menzil telafisi (2026-09-02, bkz. geo.calculate_drop_point):
+# ters rüzgar (headwind) bileşeni ne kadar güçlüyse, itkisiz/kaldırmasız
+# düşen yük yer hızına göre o kadar erken/fazla yavaşlar ve ham "hız×düşüş
+# süresi" tahmininin GERİSİNDE kalır — DROP_RANGE_BIAS_M'nin sabit tabanına
+# `(-wind_along_m_s) * fall_time_s * DROP_WIND_ALONG_GAIN` eklenir (rota
+# yönündeki arka rüzgarda azalır/negatif olabilir).
+#
+# Kalibrasyon (2026-09-02, TEK ölçüm noktası): ~17km/h (~4.7m/s) rüzgarda,
+# 5m taban telafiden SONRA hâlâ tutarlı ~6.5m (6-7m ort.) kısa düşme
+# gözlendi. DROP_TARGET_ALT_M=25m için fall_time≈2.26s → gerekli ek
+# reduction 6.5m'yi vermesi için: 0.6 ≈ 6.5 / (4.7 * 2.26). Rüzgarın o an
+# tam ters yönden estiği (saf headwind) VARSAYILDI — gerçek yön bileşeni
+# ölçülmedi.
+#
+# NOT: aynı uçuşta yanal (cross) sapma da AYRICA gözlendi (~3-5m, bkz.
+# DROP_WIND_CROSS_GAIN) — yani rüzgar aslında saf headwind DEĞİLDİ, bir
+# kısmı yanaldı. Bu yüzden "tüm rüzgar hızı along'a ait" varsayımı bu
+# kazancı GERÇEKTE OLMASI GEREKENDEN BÜYÜK göstermiş olabilir (aynı rüzgar
+# vektörünün hem along hem cross'a birden tam büyüklükte katkı vermesi
+# fiziksel olarak mümkün değil — component'lerin karesel toplamı toplam
+# rüzgar hızını aşamaz). Artık drop_trigger_task logu rüzgar_n/rüzgar_e'yi
+# ayrı ayrı bastığı için (2026-09-02) bir sonraki uçuşta gerçek along/cross
+# bileşenleri log'dan okunup İKİ kazanç birden doğru ayrıştırılabilir
+# (birden fazla nokta → lineer regresyon idealdir).
+DROP_WIND_ALONG_GAIN       = 0.6
+# Yanal (cross) rüzgar telafi kazancı (2026-09-02, bkz. geo.calculate_drop_point):
+# aynı mantık along-track yerine rotaya DİK rüzgar bileşenine uygulanır —
+# düşen yükü rotanın yanına sürükleyen rüzgarı telafi etmek için release
+# noktasını ters yöne kaydırır ("sol geri düşme" şikayetinin yanal kısmı).
+#
+# Kalibrasyon (2026-09-02, aynı uçuş/aynı TEK ölçüm noktası): aynı ~17km/h
+# (~4.7m/s) rüzgarda yanal sapma ~3-5m (ort. 4m) ölçüldü → 0.4 ≈
+# 4.0 / (4.7 * 2.26). DROP_WIND_ALONG_GAIN'deki notla aynı çekince
+# geçerli: yön bileşenleri ayrı ölçülmedi, "tüm rüzgar hızı cross'a ait"
+# varsayıldı — gerçek değer muhtemelen biraz daha yüksek (çünkü aynı
+# rüzgarın bir kısmı along'a da gitti). Yeni uçuşta rüzgar_n/rüzgar_e
+# log'undan kesin ayrıştırma yapılıp ikisi birlikte düzeltilmeli.
+DROP_WIND_CROSS_GAIN       = 0.4
 # Hedef WP'lerinin (mavi+kırmızı yönlendirme öğeleri) SABİT irtifası —
 # relative, MAV_FRAME_GLOBAL_RELATIVE_ALT (2026-08-27). Tarama irtifasından
 # (daha yüksek) bu WP'ye doğru gerçek bir ALÇALMA/yaklaşma emri oluşturur —

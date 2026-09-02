@@ -18,8 +18,10 @@ telemetry_lock    = threading.Lock()
 # vel_n/vel_e: NED yer hızı bileşenleri — drop_trigger_task'ın gerçek yer izi
 # rotasını (course) hesaplaması için (yaw değil: sabit kanat rüzgarda crab
 # yapar, yük burnun değil hız vektörünün yönünde savrulur — 2026-08-17).
+# wind_n/wind_e (2026-09-02): FC'nin EKF rüzgar tahmini (NED, m/s) — bkz.
+# mission.wind_track_task, geo.calculate_drop_point'in rüzgar telafisi.
 current_telemetry = {"lat": None, "lon": None, "alt": None, "yaw": None, "roll": None, "pitch": None,
-                     "speed": None, "vel_n": None, "vel_e": None}
+                     "speed": None, "vel_n": None, "vel_e": None, "wind_n": None, "wind_e": None}
 
 # --- Zaman damgalı telemetri geçmişi (pixel_to_gps için "en yakın örnek" eşlemesi) ---
 # position_task ve attitude_task FARKLI MAVSDK akışları, farklı hızlarda güncelleniyor

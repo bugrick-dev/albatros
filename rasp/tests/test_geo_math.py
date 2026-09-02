@@ -168,6 +168,40 @@ def test_drop_point_is_upcourse_of_target():
     assert abs(got - expected) < 0.5, f"geri ofset {got:.2f}m != beklenen {expected:.2f}m"
 
 
+def test_drop_point_headwind_increases_range_compensation():
+    """Ters rüzgar (headwind), itkisiz düşen yükü yer hızına göre daha erken
+    yavaşlatır → release noktası hedefe DAHA da yaklaşmalı (bkz.
+    config.DROP_WIND_ALONG_GAIN, 2026-09-02: 17km/h rüzgarda saha ölçümü
+    ~6-7m ek kısa düşme göstermişti)."""
+    alt, speed, course = 25.0, 13.0, 0.0   # kuzeye uçuş
+    tlat, tlon = 39.0, 32.0
+    no_wind = geo.calculate_drop_point(tlat, tlon, alt, speed, course)
+    fall_time = math.sqrt(2 * alt / 9.81)
+    headwind_n = -4.72   # ~17km/h, tam ters yönden (güneyden) esiyor
+    with_headwind = geo.calculate_drop_point(tlat, tlon, alt, speed, course,
+                                              wind_n=headwind_n, wind_e=0.0)
+    d0 = geo.haversine(tlat, tlon, *no_wind)
+    d1 = geo.haversine(tlat, tlon, *with_headwind)
+    expected_extra = 4.72 * fall_time * config.DROP_WIND_ALONG_GAIN
+    got_extra = d0 - d1
+    assert got_extra > 0, "ters rüzgarda release noktası hedefe yaklaşmadı"
+    assert abs(got_extra - expected_extra) < 0.1, (
+        f"ek telafi {got_extra:.2f}m != beklenen {expected_extra:.2f}m")
+
+
+def test_drop_point_crosswind_shifts_upwind():
+    """Yanal rüzgar, düşen yükü rotanın rüzgar yönüne sürükler → release
+    noktası bunun TERSİ yöne (rüzgarın estiği tarafa) kaymalı, böylece
+    sürüklenme hedefe geri getirsin (2026-09-02, DROP_WIND_CROSS_GAIN)."""
+    alt, speed, course = 25.0, 13.0, 0.0   # kuzeye uçuş, sağ=doğu
+    tlat, tlon = 39.0, 32.0
+    # Doğuya esen rüzgar (wind_e > 0) yükü sağa (doğuya) sürükler.
+    rlat, rlon = geo.calculate_drop_point(tlat, tlon, alt, speed, course,
+                                           wind_n=0.0, wind_e=4.72)
+    assert rlon < tlon, ("doğuya esen rüzgarda release noktası hedefin "
+                          "batısına kaymalıydı (sürüklenmeyi telafi etmek için)")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     failed = 0
