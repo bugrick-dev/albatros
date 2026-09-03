@@ -122,7 +122,8 @@ def _wfb_cmd_str(iface):
         f"sudo chrt -f 10 wfb_tx -K {config.WFB_KEY_PATH} "
         f"-i {config.WFB_LINK_ID} -p 0 -u {config.WFB_UDP_PORT} "
         f"-M {config.WFB_MCS} -B {config.WFB_BANDWIDTH} -G {config.WFB_GUARD_INTERVAL} "
-        f"-L {config.WFB_LDPC} -k {config.WFB_FEC_K} -n {config.WFB_FEC_N} {iface}"
+        f"-L {config.WFB_LDPC} -S {config.WFB_STBC} "
+        f"-k {config.WFB_FEC_K} -n {config.WFB_FEC_N} {iface}"
     )
 
 
@@ -218,8 +219,15 @@ def _wfb_watchdog(iface):
 
 
 def _spawn_rpicam():
+    # 2026-09-03: --flush 1 eklendi — rpicam-vid'in kendi belgesinde "flush
+    # output data as soon as possible" diye tanımlanan bayrak, ÖNTANIMLI
+    # OLARAK KAPALI (=0). Kronometre testinde ölçülen ~600ms glass-to-glass
+    # gecikmenin büyük kısmının kaynağı bulunamadı (encode/queue tarafı
+    # tertemiz: düşen=0, en-yavaş-yazım=1-2ms — bkz. vision.log STATUS), bu
+    # yüzden kalan şüphe kamera yakalama/stdout buffer'ına düştü. GERİ ALMAK
+    # için: "--flush 1 " kısmını silmek yeterli (eski davranışa birebir döner).
     rpicam_cmd = (
-        f"rpicam-vid -t 0 --codec yuv420 "
+        f"rpicam-vid -t 0 --codec yuv420 --flush 1 "
         f"--width {config.WIDTH} --height {config.HEIGHT} --framerate {config.FPS} "
         f"-o -"
     )

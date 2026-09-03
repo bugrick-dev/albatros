@@ -12,6 +12,17 @@ import numpy as np
 WIDTH  = 640
 HEIGHT = 480
 FPS    = 30
+
+# 2026-09-03: NOTLAR_2026-09-02.md #4 "Adım 2" — yayına (RF'ye) giden kare
+# hızı. Tespit döngüsü FPS (30) ile ÇALIŞMAYA DEVAM EDER, bu sadece encoder'a
+# giden kareyi seyreltir (her N. kare, bkz. vision.py _start_encode_chain /
+# ana döngü). RF/FEC/MCS/bant hiçbiri değişmiyor — menzile sıfır etki.
+# Etkisi: aynı BITRATE'te kare başına bit 2× (kalite artışı, ölçüm tablosunda
+# en iyi sonuç), paket/sn ½ (yerel kuyruk düşmesi + hava paket kaybı azalır,
+# "en etkili tek değişiklik" olarak işaretlenmiş).
+# GERİ ALMAK için: FPS ile aynı değere (30) çekmek yeterli — o zaman her kare
+# yayınlanır, eski davranışa birebir döner.
+STREAM_FPS = 15
 # 2026-08-23: 1000000 (1Mbps) canlı teşhiste hâlâ sık yerel-kuyruk paket
 # kaybına yol açıyordu (wfb_tx.log "packets dropped", ~4-7 paket/s, OpenCV/
 # encode tarafı temizken bile) — bufsize daraltma denendi, İYİLEŞTİRMEDİ
@@ -21,6 +32,18 @@ BITRATE = 800000  # 2026-08-24: 600k'dan kademeli A/B artışı (1. adım) — k
                   # artırımı denemesi, wfb_tx.log'da yeni kayıp olup olmadığı
                   # izlenerek yapılıyor. Sorun çıkarsa 600000'e geri alınabilir.
 INTRA   = 15        # paket kaybı sonrası hızlı toparlanma için sık keyframe
+
+# 2026-09-03: NOTLAR_2026-09-02.md #4 "Adım 1" — bant/menzil SABİT (BITRATE,
+# WIDTH/HEIGHT, FEC/MCS hiçbiri değişmedi), sadece encoder aynı bit bütçesini
+# daha verimli kullanıyor. Ölçüm (bu Pi, 300 kare, 800 kbps, gerçek yer
+# dokusu+hareket): ultrafast/baseline hata(1-SSIM)=0.0160 → veryfast/main
+# hata=0.0085 (−47%). Ek CPU maliyeti kare başı ~3ms (Pi5, libx264,
+# 4 çekirdek) — gecikmeye/tespit döngüsüne etkisi ihmal edilebilir düzeyde.
+# Şart: alıcı (yer istasyonu GStreamer) H264 "main" profili + CABAC açabilmeli
+# (avdec_h264/openh264/donanım decoderların hepsi açar). Sorun çıkarsa
+# ikisini de eskiye ("ultrafast", "baseline") çevirmek yeterli.
+ENCODE_PRESET  = "veryfast"
+ENCODE_PROFILE = "main"
 
 # Kamera fiziksel olarak ters monte (kablo yukarı çıkacak şekilde). NOT:
 # capture (rpicam-vid) ve kalibrasyon KASITLI olarak native/rotasyonsuz kalır
@@ -155,6 +178,14 @@ WFB_MCS            = 0      # en dayanıklı modülasyon (BPSK, HT MCS0)
 WFB_BANDWIDTH      = 20     # MHz — dar bant, daha uzun menzil
 WFB_GUARD_INTERVAL = "long"
 WFB_LDPC           = 1
+# 2026-09-03: T3U Plus (RTL8812BU) 2x2 MIMO donanımı — ama wfb_tx şu ana
+# kadar ikinci anteni hiç kullanmıyordu (stbc varsayılan 0). STBC (Space-
+# Time Block Coding), spatial multiplexing'in aksine throughput ARTIRMAZ,
+# tek veri akışını iki antenden diversity-coded gönderir → alıcıdaki SNR/
+# güvenilirlik artar, FEC gibi ekstra bant/paket maliyeti YOK. Menzil
+# hedefiyle uyumlu (spatial multiplexing/-N 2'nin aksine, o düşük SNR'da
+# bozulur). GERİ ALMAK için: 0'a çekmek yeterli.
+WFB_STBC           = 1
 WFB_FEC_K          = 4
 WFB_FEC_N          = 12     # 3x FEC yedekliliği — sahada ölçülüp doğrulandı
 # T3U Plus (RTL8812BU, 88x2bu) donanım tavanı: 3100 mBm kabul ediliyor,

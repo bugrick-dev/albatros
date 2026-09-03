@@ -361,10 +361,16 @@ def opencv_processing_thread(queue):
             "ffmpeg",
             "-f", "rawvideo", "-pix_fmt", "bgr24",
             "-s", f"{config.WIDTH}x{config.HEIGHT}",
-            "-r", str(config.FPS),
+            # NOT: burada config.FPS DEĞİL config.STREAM_FPS kullanılıyor —
+            # aşağıdaki ana döngüde encoder'a fiilen bu hızda kare gidiyor
+            # (Adım 2, bkz. config.py). Yanlış (FPS=30) yazılırsa x264 rate
+            # control kare başına bit bütçesini yarıya düşürür (VBV/-b:v
+            # hesabı "coded time"a göre yapılır, gerçek saate göre değil) —
+            # yani Adım 2'nin asıl kazancı ("kare başına bit 2×") kaybolur.
+            "-r", str(config.STREAM_FPS),
             "-i", "-",
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            "-pix_fmt", "yuv420p", "-profile:v", "baseline",
+            "-c:v", "libx264", "-preset", config.ENCODE_PRESET, "-tune", "zerolatency",
+            "-pix_fmt", "yuv420p", "-profile:v", config.ENCODE_PROFILE,
             "-b:v", str(config.BITRATE), "-maxrate", str(config.BITRATE),
             "-bufsize", str(config.BITRATE // 2), "-g", str(config.INTRA),
             # 2026-08-24: periyodik TAM I-frame yerine sürekli/kayan intra-
@@ -567,6 +573,13 @@ def opencv_processing_thread(queue):
     log.info(f"[VISION] Frame okuma döngüsü başladı — frame_size={frame_size} bytes")
 
     last_staleness_warn = 0.0
+
+    # 2026-09-03: Adım 2 — tespit döngüsü FPS (30) hızında koşmaya devam
+    # eder, sadece encoder'a giden kare STREAM_FPS'e seyreltilir (her N.
+    # kare). N=1 olursa (STREAM_FPS==FPS) her kare gider, yani eski
+    # davranışla birebir aynı olur (geri alma = STREAM_FPS'i FPS'e eşitlemek).
+    _stream_skip_n = max(1, round(config.FPS / config.STREAM_FPS))
+    _stream_frame_idx = 0
 
     while not state.shutdown_requested.is_set():
         try:
@@ -818,10 +831,15 @@ def opencv_processing_thread(queue):
                               f"SERVO ACILDI: {color.upper()} kanal={ev['channel']} @ {lat_str},{lon_str}",
                               (10, y), _LOCK_SCALE, (0, 255, 0))
 
-            try:
-                _encode_queue.put_nowait(stream_frame.tobytes())
-            except _queue.Full:
-                _encode_stats["dropped"] += 1  # encoder meşgul, bu frame'i düş
+            # Adım 2: yayına giden kareyi STREAM_FPS'e seyrelt (tespit üstteki
+            # işleme zaten FPS=30'da tam hızda yapıldı, bu sadece encode'a
+            # giden kareyi atlıyor). _stream_skip_n=1 ise her kare gider.
+            _stream_frame_idx += 1
+            if _stream_frame_idx % _stream_skip_n == 0:
+                try:
+                    _encode_queue.put_nowait(stream_frame.tobytes())
+                except _queue.Full:
+                    _encode_stats["dropped"] += 1  # encoder meşgul, bu frame'i düş
 
             # Donanım heartbeat LED'i için canlılık damgası (bkz. heartbeat.py)
             # — bir kare işleme turu TAM olarak buraya kadar sorunsuz
