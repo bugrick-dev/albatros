@@ -203,7 +203,26 @@ async def telemetry_task(drone):
 async def attitude_task(drone):
     """Yaw + roll + pitch akışı — roll/pitch, pixel_to_gps()'in tespit anındaki
     gerçek uçak duruşunu (özellikle bank/roll) hesaba katabilmesi için gerekli
-    (bkz. geo.pixel_to_gps, 2026-08-08: roll bankında tespit hatası bulundu/düzeltildi)."""
+    (bkz. geo.pixel_to_gps, 2026-08-08: roll bankında tespit hatası bulundu/düzeltildi).
+
+    ATTITUDE mesaj hızı (2026-09-05, bench'te bulundu): telemetry_task
+    GLOBAL_POSITION_INT'i 10Hz'e çıkarınca ölçüldü — pozisyon gerçekten
+    10Hz'e çıktı ama attitude_euler() hâlâ eski/varsayılan hızındaydı
+    (ölçülen att_age_s ort. ~190ms, en kötü ~250ms), bu da
+    TELEMETRY_MATCH_MAX_AGE_S=0.10s eşiğini (state.nearest_telemetry_at
+    max(pos_age_s, att_age_s) aldığından) fiilen ANLAMSIZ kılıyordu — tespit
+    aktifken neredeyse her kare "TELEMETRI BAYAT" reddedilecekti. Aynı
+    SET_MESSAGE_INTERVAL tekniğiyle (bkz. telemetry_task/wind_track_task)
+    ATTITUDE mesajını da config.ATTITUDE_STREAM_HZ'de istiyoruz."""
+    try:
+        await drone.mavlink_direct.send_message(_make_message_interval_command(
+            config.MAVLINK_MSG_ID_ATTITUDE, int(1_000_000 / config.ATTITUDE_STREAM_HZ)))
+        log.info(f"[ATTITUDE] FC'den ATTITUDE {config.ATTITUDE_STREAM_HZ:.0f}Hz istendi "
+                 f"(SET_MESSAGE_INTERVAL)")
+    except Exception as e:
+        log.info(f"[ATTITUDE] ⚠ SET_MESSAGE_INTERVAL gönderilemedi: {e} — "
+                 f"varsayılan akış hızına güveniliyor")
+
     log.info("[ATTITUDE] Yaw/roll/pitch akışı başlatıldı")
     count = 0
     async for attitude in drone.telemetry.attitude_euler():

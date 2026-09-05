@@ -391,6 +391,22 @@ if CAMERA_CALIB_PATH.is_file():
 POSITION_STREAM_HZ = 10.0
 MAVLINK_MSG_ID_GLOBAL_POSITION_INT = 33   # common.xml GLOBAL_POSITION_INT
 
+# --- Attitude telemetri akış hızı (2026-09-05, sahada bench'te bulundu) ---
+# POSITION_STREAM_HZ eklenip FC'de test edilince (bench, FC bağlı) ölçüldü:
+# pozisyon gerçekten 10Hz'e çıktı (650 örnek/65.0s = tam 10.0Hz) AMA
+# attitude_euler() akışı hâlâ eski/varsayılan hızındaydı — ölçülen att_age_s
+# ortalama ~190ms, en kötü ~250ms (bkz. vision.py "telemetri eşleşmesi ...
+# eski" log'u). state.nearest_telemetry_at ikisinin de EN KÖTÜSÜNÜ
+# (max(pos_age_s, att_age_s)) esas aldığından, yalnızca pozisyonu
+# hızlandırmak TELEMETRY_MATCH_MAX_AGE_S=0.10s eşiğini (aşağıda) attitude
+# yüzünden ANLAMSIZ kılıyordu — tespit aktifken NEREDEYSE HER kare "TELEMETRI
+# BAYAT" diye reddedilecekti (0.19-0.25s > 0.10s). ATTITUDE mesajını (id 30)
+# da aynı SET_MESSAGE_INTERVAL tekniğiyle (bkz. mission.attitude_task) bu
+# hızda istiyoruz — GLOBAL_POSITION_INT ile AYNI değer, ikisi birlikte
+# TELEMETRY_MATCH_MAX_AGE_S=0.10s'in gerçekten anlamlı olmasını sağlıyor.
+ATTITUDE_STREAM_HZ = 10.0
+MAVLINK_MSG_ID_ATTITUDE = 30   # common.xml ATTITUDE
+
 # --- Uçuş parametreleri ---
 # DROP_TRIGGER_RADIUS_M artık "tetik" değil "KURMA (arming)" yarıçapı: bu
 # mesafeye girilince canlı drop değerlendirmesi başlar. Fiili bırakma kararı
