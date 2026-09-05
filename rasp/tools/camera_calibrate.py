@@ -2,8 +2,17 @@
 """
 Kamera kalibrasyonu — tek seferlik çalıştırılır.
 
-Kullanım (Pi üzerinde):
-    sudo /home/albatros/venv/bin/python3 rasp/tools/camera_calibrate.py
+Kullanım (Pi üzerinde, monitör bağlıyken — bkz. CANLI ÖNİZLEME aşağıda):
+    /home/albatros/venv/bin/python3 rasp/tools/camera_calibrate.py
+
+NOT: BAŞINDA sudo KULLANMA — kullanıcı zaten video/gpio gruplarında
+(Picamera2 için sudo gerekmiyor) ve script'in kendi içindeki tek ayrıcalıklı
+adım (albatros.service durdur/başlat) her hâlükârda kendi sudo'sunu
+subprocess ile çağırıyor (parola sorulmaz, passwordless sudo tanımlı).
+sudo ile ÇALIŞTIRIRSAN kök kullanıcının farklı bir Wayland/masaüstü oturum
+dizini olduğundan (root'un XDG_RUNTIME_DIR'ı senin oturumunun soketini
+göremez) CANLI ÖNİZLEME PENCERESİ açılmaz, script sessizce headless moda
+düşer.
 
 Yapman gereken TEK şey: script başladıktan sonra satranç tahtası desenini
 (otomatik oluşturulup rasp/tools/chessboard_pattern.png olarak kaydedilir —
@@ -12,6 +21,17 @@ kameranın önünde YAVAŞÇA hareket ettirmek: farklı açılardan, farklı
 mesafelerden, kadrajın farklı köşelerinden göster. Script yeterli sayıda
 iyi görüntü (varsayılan 20) toplayınca otomatik durur ve hesaplamayı yapar.
 
+CANLI ÖNİZLEME (2026-09-05 eklendi): monitör bağlıysa (bu Pi'de labwc/
+Wayland masaüstü) canlı kamera görüntüsü, tespit edilen satranç tahtası
+köşeleri ve ilerleme durumu ekranda ayrı bir pencerede gösterilir — artık
+kör kör hareket ettirmek yerine tahtanın GERÇEKTEN görülüp görülmediğini
+anlık izleyebilirsin. Mouse GEREKMEZ: pencere odaktayken 'q' ya da ESC
+tuşu, terminaldeki Ctrl+C ile AYNI şekilde o ana kadar toplananla devam
+eder. Monitör/görüntü sunucusu yoksa (ör. saf SSH, X/Wayland soketi
+erişilemez) pencere açma denemesi sessizce başarısız olur ve script eski
+(2026-09-05 öncesi) headless davranışına düşer — terminale ilerleme
+yazmaya devam eder, ÇÖKMEZ.
+
 Ne yapar:
   1. albatros.service çalışıyorsa geçici olarak durdurur (kamerayı tek bir
      süreç kullanabilir — rpicam-vid ile çakışmasın diye), script bitince
@@ -19,8 +39,9 @@ Ne yapar:
   2. Satranç tahtası deseni yoksa üretir (chessboard_pattern.png).
   3. Picamera2 ile canlı kare akışından satranç tahtası köşelerini otomatik
      tespit eder, yeterince FARKLI pozlardan CHESSBOARD_COUNT adet iyi
-     görüntü toplayana kadar devam eder (ekran/önizleme gerekmez — headless
-     çalışır, terminale ilerleme yazar).
+     görüntü toplayana kadar devam eder — HER karede (kabul edilsin/
+     edilmesin) canlı önizleme penceresine çizilir, terminale de ilerleme
+     yazılır.
   4. cv2.calibrateCamera() ile gerçek fx,fy,cx,cy ve distorsiyon
      katsayılarını hesaplar, reprojection RMS hatasını raporlar.
   5. Sonucu rasp/camera_calib.json'a kaydeder ve config.py'ye eklenecek
@@ -31,11 +52,22 @@ NOT: config.WIDTH x config.HEIGHT (640x480) çözünürlüğünde kalibre eder �
 fx/fy/cx/cy geçersiz olur.
 """
 import json
+import os
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+# Canlı önizleme (2026-09-05): OpenCV'nin Qt GUI arka ucu bu Pi'deki saf
+# Wayland masaüstünde (labwc, XWayland YOK) varsayılan xcb eklentisiyle
+# pencere açamıyor — QT_QPA_PLATFORM=wayland AÇIKÇA istenmeli. cv2 IMPORT
+# EDİLMEDEN ÖNCE ayarlanmalı (Qt eklentisi ilk kullanımda seçiliyor).
+# Kullanıcı zaten kendi ortamında farklı bir değer ayarlamışsa (ör. gerçek
+# X11/XWayland oturumu) DOKUNULMUYOR — yalnızca WAYLAND_DISPLAY VARSA ve
+# QT_QPA_PLATFORM hiç ayarlanmamışsa varsayılan veriliyor.
+if os.environ.get("WAYLAND_DISPLAY") and "QT_QPA_PLATFORM" not in os.environ:
+    os.environ["QT_QPA_PLATFORM"] = "wayland"
 
 import cv2
 import numpy as np
@@ -107,6 +139,49 @@ def restart_service():
 
 # ==================== 3) GÖRÜNTÜ TOPLAMA ====================
 
+_PREVIEW_WINDOW = "Kamera Kalibrasyonu — q/ESC: bitir"
+
+
+def _open_preview_window():
+    """Canlı önizleme penceresini açmayı DENER (2026-09-05) — monitör/görüntü
+    sunucusu yoksa (ör. saf SSH, X/Wayland soketi erişilemez) cv2 burada
+    istisna fırlatır; bu fonksiyon False döner, çağıran taraf sessizce eski
+    (2026-09-05 öncesi) headless davranışına düşer. Script'in geri kalanı
+    ÇÖKMEZ — yalnızca görsel geri bildirim kaybolur."""
+    try:
+        cv2.namedWindow(_PREVIEW_WINDOW, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(_PREVIEW_WINDOW, config.WIDTH * 2, config.HEIGHT * 2)
+        return True
+    except Exception as e:
+        log(f"⚠ Canlı önizleme penceresi açılamadı ({e}) — headless devam ediliyor "
+            f"(terminale ilerleme yazılmaya devam eder)")
+        return False
+
+
+def _draw_preview(frame, found, corners, status_text, status_color, progress_text):
+    """HER karede (kabul edilsin/edilmesin) çağrılır — tespit edilen köşeleri
+    ve ilerleme durumunu canlı pencereye çizer."""
+    preview = frame.copy()
+    if found and corners is not None:
+        cv2.drawChessboardCorners(preview, (BOARD_COLS, BOARD_ROWS), corners, found)
+    # NOT: Picamera2 "RGB888" istese de veri fiilen BGR sırasında geliyor (bkz.
+    # aşağıdaki last_capture.jpg notu) — bu yüzden burada TEKRAR RGB2BGR
+    # UYGULANMIYOR, önizleme frame'i olduğu gibi kullanılıyor.
+    cv2.putText(preview, progress_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(preview, status_text, (10, 65), cv2.FONT_HERSHEY_SIMPLEX,
+                0.7, status_color, 2, cv2.LINE_AA)
+    cv2.imshow(_PREVIEW_WINDOW, preview)
+
+
+def _preview_quit_requested():
+    """cv2.waitKey ile pencere olaylarını pompalar VE 'q'/ESC'e basılıp
+    basılmadığını kontrol eder — mouse gerekmez, terminaldeki Ctrl+C ile
+    AYNI etkiyi (o ana kadar toplananla devam) verir."""
+    key = cv2.waitKey(1) & 0xFF
+    return key in (ord("q"), 27)  # 27 = ESC
+
+
 def capture_calibration_images():
     from picamera2 import Picamera2
 
@@ -133,25 +208,51 @@ def capture_calibration_images():
     objpoints, imgpoints = [], []
     last_corners = None
     last_capture_time = 0.0
+    accepted_flash_until = 0.0  # bu zamana kadar "KABUL EDİLDİ ✓" gösterilir
+
+    preview_on = _open_preview_window()
 
     log(f"Canlı tarama başladı — hedef: {CHESSBOARD_COUNT} geçerli görüntü. "
         f"Satranç tahtasını farklı açı/mesafe/konumlardan yavaşça göster...")
-    log("(Ctrl+C ile istediğin an durdurabilirsin, o ana kadar toplananla kalibrasyon dener)")
+    if preview_on:
+        log("(Ctrl+C VEYA önizleme penceresindeyken 'q'/ESC ile istediğin an "
+            "durdurabilirsin, o ana kadar toplananla kalibrasyon dener)")
+    else:
+        log("(Ctrl+C ile istediğin an durdurabilirsin, o ana kadar toplananla kalibrasyon dener)")
 
     try:
         while len(objpoints) < CHESSBOARD_COUNT:
             frame = picam2.capture_array("main")
             gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            progress_text = f"Kalibrasyon: {len(objpoints)}/{CHESSBOARD_COUNT}"
 
             found, corners = cv2.findChessboardCorners(
                 gray, (BOARD_COLS, BOARD_ROWS),
                 flags=cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK,
             )
             if not found:
+                if preview_on:
+                    # NOT: cv2.putText (Hershey font) UTF-8 Türkçe karakterleri (İ/Ğ/Ş/ı
+                    # vb.) ve ✓/— gibi özel sembolleri render edemiyor ("??" basıyor,
+                    # bkz. vision.py/geo.py'deki aynı not) — bu yüzden pencere
+                    # metinleri KASITLI olarak ASCII-only.
+                    status = ("KABUL EDILDI +" if time.time() < accepted_flash_until
+                               else "ARANIYOR - tahtayi kadraja al")
+                    color = (0, 255, 0) if time.time() < accepted_flash_until else (0, 165, 255)
+                    _draw_preview(frame, found, corners, status, color, progress_text)
+                    if _preview_quit_requested():
+                        log("Kullanıcı 'q'/ESC ile durdurdu")
+                        break
                 continue
 
             now = time.time()
             if now - last_capture_time < MIN_CAPTURE_INTERVAL_SEC:
+                if preview_on:
+                    _draw_preview(frame, found, corners, "TESPIT EDILDI - bekleniyor (cooldown)",
+                                  (0, 255, 255), progress_text)
+                    if _preview_quit_requested():
+                        log("Kullanıcı 'q'/ESC ile durdurdu")
+                        break
                 continue
 
             corners_refined = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
@@ -161,12 +262,28 @@ def capture_calibration_images():
                     corners_refined.reshape(-1, 2) - last_corners.reshape(-1, 2), axis=1
                 )))
                 if shift < MIN_CORNER_SHIFT_PX:
+                    if preview_on:
+                        _draw_preview(frame, found, corners_refined,
+                                      "TESPIT EDILDI - ayni poz, HAREKET ETTIR",
+                                      (0, 165, 255), progress_text)
+                        if _preview_quit_requested():
+                            log("Kullanıcı 'q'/ESC ile durdurdu")
+                            break
                     continue  # aynı pozdan tekrar — atla, tahtayı hareket ettir
 
             objpoints.append(objp.copy())
             imgpoints.append(corners_refined)
             last_corners = corners_refined
             last_capture_time = now
+            accepted_flash_until = now + 0.6
+
+            if preview_on:
+                _draw_preview(frame, found, corners_refined,
+                              f"KABUL EDILDI + ({len(objpoints)}/{CHESSBOARD_COUNT})",
+                              (0, 255, 0), progress_text)
+                if _preview_quit_requested():
+                    log("Kullanıcı 'q'/ESC ile durdurdu")
+                    break
 
             preview = frame.copy()
             cv2.drawChessboardCorners(preview, (BOARD_COLS, BOARD_ROWS), corners_refined, found)
@@ -185,6 +302,9 @@ def capture_calibration_images():
         log(f"Kullanıcı durdurdu — {len(objpoints)} görüntüyle devam ediliyor")
     finally:
         picam2.stop()
+        if preview_on:
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)  # bazı Qt sürümlerinde pencerenin fiilen kapanması için gerekli
 
     return objpoints, imgpoints, (config.WIDTH, config.HEIGHT)
 
