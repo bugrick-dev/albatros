@@ -81,19 +81,31 @@ detected_targets = {"mavi": None, "kirmizi": None}
 # (2026-08-20, bkz. mission.py mission_task — release_points.append noktası).
 locked_targets = {"mavi": None, "kirmizi": None}  # {color: (lat, lon)} | None
 
-# --- Kilit anındaki WP sırası (2026-08-21) ---
-# Hedefin GPS'i kilitlendiği ANDA current_wp["index"]'in bir kopyası — "bu
-# hedef mission'daki kaçıncı WP'ye denk geliyordu" sorusuna HUD'dan cevap
+# --- Kilit anında hesaplanan YENİ (drop) plan WP numarası (2026-08-21) ---
+# "Bu hedef YENİ misyonda kaçıncı WP'ye denk geliyor" sorusuna HUD'dan cevap
 # vermek için (bkz. mission.py mission_task, vision.py overlay). current_wp
 # gibi sürekli güncellenmez, locked_targets gibi KALICIDIR.
 #
-# DÜZELTME (2026-08-26): kilit anında yazılan bu değer ESKİ (tarama) misyonunun
-# WP index'idir — build_and_start_drop_mission() misyonu tamamen yeniden
-# numaralandırıp (0=home, 1=dönüş, 2..=drop) yüklediğinde bu eski index HUD'da
-# saçma/anlamsız kalıyordu. build_and_start_drop_mission() artık yeni planı
-# yazar yazmaz bu değeri o hedefin YENİ plandaki drop öğesi seq'iyle
-# EZİYOR — HUD her zaman uçağın O AN izlediği plana göre doğru WP'yi gösterir.
+# DÜZELTME (2026-08-26 → 2026-09-05): eskiden kilit anında ESKİ (tarama)
+# misyonunun WP index'i (current_wp["index"]) yazılıyor, sonra
+# build_and_start_drop_mission() yeni misyonu fiilen yükleyince EZİLEREK
+# düzeltiliyordu — HUD, uçuşun büyük kısmında (ikinci hedef kilitlenip yeni
+# misyon yüklenene dek) YANLIŞ/eski numara gösteriyordu. Artık mission_task
+# kilit ANINDA doğrudan YENİ plandaki numarayı yazıyor (drop bloğu her zaman
+# _DROP_BLOCK_START_SEQ'ten başlayıp release_points sırasıyla numaralandığı
+# için baştan bilinir) — build_and_start_drop_mission aynı formülle bunu
+# yalnızca TEYİT eder.
 locked_target_wp = {"mavi": None, "kirmizi": None}  # {color: int} | None
+
+# --- Hedefin canlı balistik bırakma noktasına anlık mesafesi (2026-09-05) ---
+# drop_trigger_task'ın her telemetri tik'inde YENİDEN hesapladığı bırakma
+# noktasına (rüzgar+hız telafili, bkz. geo.calculate_drop_point) o anki uçak
+# konumundan mesafe — HUD'da KILIT satırının yanında gösterilir ki mesafenin
+# azalışı ile gerçek "SERVO AÇILDI" anı aynı ekranda karşılaştırılabilsin.
+# Hedef henüz drop_trigger_task tarafından hiç değerlendirilmediyse (mission
+# yüklenmedi / henüz o hedefin sırası gelmedi) None kalır. Yük bırakıldığında
+# (rp["dropped"]=True) artık güncellenmez — son değerinde donuk kalır.
+drop_distance = {"mavi": None, "kirmizi": None}  # {color: float (metre)} | None
 
 # --- Canlı reddedilme nedeni (2026-08-26) ---
 # Bir kare renk+şekil filtresini geçip GPS hesabına girdiğinde bu hesap

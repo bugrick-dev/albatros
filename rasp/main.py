@@ -158,17 +158,36 @@ async def run():
     log.info(f"  Rüzgar telafi kazancı  : along={config.DROP_WIND_ALONG_GAIN} cross={config.DROP_WIND_CROSS_GAIN}")
     log.info("=" * 60 + "\n")
 
+    # NOT (2026-09-05 düzeltmesi): aşağıdaki görevlerin çoğu artık ÇIPLAK
+    # değil, mission.resilient_stream ile sarmalanmış çağrılıyor. KÖK NEDEN:
+    # bunlar (fc_connection_task hariç hepsi bir MAVSDK telemetri/mission_raw
+    # akışını `async for` ile tüketiyor) FC bağlantısı GERÇEKTEN koparsa
+    # (USB CDC-ACM'in kısa süreliğine kaybolması gibi, bkz.
+    # mission._fc_reconnect_loop) altındaki grpc stream'i bir istisnayla
+    # SONLANDIRABİLİR. Bu asyncio.gather return_exceptions=YOK çağrıldığından
+    # (aşağıdaki tasarım — her görevin durumu ayrı, birbirinden bağımsız
+    # olması gerekiyor) BURADAN kaçan TEK bir istisna gather'ı düşürüp
+    # aşağıdaki finally'nin pipeline.stop_pipeline() ile VİDEO YAYININI DA
+    # durdurmasına, ardından sürecin TAMAMEN ÇÖKÜP systemd tarafından
+    # sıfırdan yeniden başlatılmasına (rpicam-vid/WFB-ng pipeline'ı dahil)
+    # yol açıyordu — sahada "FC kopunca görüntü de gidiyor" diye gözlenen
+    # semptomun kök nedeni buydu; video mantıken FC'den TAMAMEN bağımsız
+    # (ayrı thread + ayrı OS süreçleri, bkz. yukarıdaki video pipeline notu).
+    # resilient_stream istisnayı yutup kısa bekleme sonrası akışı yeniden
+    # abone eder (bkz. orada) — mission_task ise DURUM taşıdığından
+    # (release_points) sıfırdan yeniden başlatılamaz, guarded_mission_task
+    # yalnızca istisnayı loglayıp yutar (bkz. orada).
     try:
         await asyncio.gather(
-            mission.fc_connection_task(drone),
-            mission.telemetry_task(drone),
-            mission.attitude_task(drone),
-            mission.speed_track_task(drone),
-            mission.wind_track_task(drone),
-            mission.gps_health_task(drone),
-            mission.mission_task(drone, state.target_queue),
-            mission.detection_activation_task(drone),
-            mission.waypoint_tracking_task(drone),
+            mission.resilient_stream("FC_CONN", lambda: mission.fc_connection_task(drone)),
+            mission.resilient_stream("TELEMETRY", lambda: mission.telemetry_task(drone)),
+            mission.resilient_stream("ATTITUDE", lambda: mission.attitude_task(drone)),
+            mission.resilient_stream("SPEED", lambda: mission.speed_track_task(drone)),
+            mission.wind_track_task(drone),  # zaten kendi içinde korumalı (2026-09-02)
+            mission.resilient_stream("GPS_HEALTH", lambda: mission.gps_health_task(drone)),
+            mission.guarded_mission_task(drone, state.target_queue),
+            mission.resilient_stream("DETECTION_ACT", lambda: mission.detection_activation_task(drone)),
+            mission.resilient_stream("WP_TRACK", lambda: mission.waypoint_tracking_task(drone)),
         )
     except asyncio.CancelledError:
         log.info("[MAIN] asyncio.CancelledError — görev iptal edildi")

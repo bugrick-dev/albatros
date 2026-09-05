@@ -69,6 +69,75 @@ async def fc_connection_task(drone):
             asyncio.create_task(_fc_reconnect_loop(drone))
 
 
+async def resilient_stream(name, coro_factory):
+    """
+    "Pasif akış aynalama" görevlerini (telemetri/durum — kendi durumu yok,
+    sadece FC'den gelen bir MAVSDK akışını state.*'e yazar) main.py'deki TEK
+    asyncio.gather'dan İZOLE eder (2026-09-05 düzeltmesi).
+
+    KÖK NEDEN: bu görevlerin hepsi `async for x in drone.telemetry.foo():`
+    şeklinde grpc.aio üzerinden mavsdk_server'a abone — FC bağlantısı
+    GERÇEKTEN koparsa (ör. USB CDC-ACM'in kısa süreliğine kaybolması, bkz.
+    _fc_reconnect_loop docstring) altındaki grpc stream'i genelde SESSİZCE
+    takılı kalmaz, bir grpc.aio.AioRpcError (ör. UNAVAILABLE) fırlatarak
+    SONLANIR. main.py'deki asyncio.gather(...) return_exceptions=YOK
+    çağrıldığından buradan kaçan TEK bir istisna gather'ı düşürür, main'in
+    finally'si pipeline.stop_pipeline() ile VİDEO YAYININI DA durdurur
+    (video kendi başına ayrı thread + ayrı OS süreçleriyle FC'den TAMAMEN
+    bağımsız çalışıyor olsa da), sonra istisna asyncio.run()'a kadar
+    yükselip TÜM SÜREÇ ÇÖKER (main.py yalnızca CancelledError'ı yakalıyor).
+    systemd (Restart=on-failure, RestartSec=3) süreci sıfırdan başlatır —
+    bu da rpicam-vid/WFB-ng pipeline'ının TAMAMEN yeniden kurulmasını
+    gerektirir. Sonuç, sahada gözlenen semptomun ta kendisi: kısa bir FC
+    bağlantı pürüzü, MANTIKEN video akışını hiç etkilememesi gerekirken
+    görüntüyü de kesiyordu.
+
+    ÇÖZÜM: mission.wind_track_task'taki (2026-09-02) "istisnayı yut, sistemi
+    ayakta tut" desenini burada GENELLEŞTİRİYORUZ — istisna loglanır, kısa
+    bir bekleme (config.FC_RECONNECT_INTERVAL_SEC) sonrası coro_factory()
+    YENİDEN çağrılıp akışa TAZE abone olunur; main.py'deki gather bunu HİÇ
+    görmez, dolayısıyla video (ve diğer tüm görevler) etkilenmeden sürer.
+    coro_factory HER ÇAĞRIDA TAZE bir coroutine üretmeli (ör. bir lambda) —
+    aynı coroutine nesnesi iki kez await edilemez.
+
+    Yalnızca DURUMSUZ akış-aynalama görevlerine uygundur. mission_task gibi
+    durum taşıyan (release_points, arama ilerleyişi) bir görevi sıfırdan
+    yeniden başlatmak GÜVENLİ DEĞİLDİR — bkz. main.py çağrı noktasındaki
+    ayrı (yeniden başlatmayan) sarmalayıcı.
+    """
+    while not state.shutdown_requested.is_set():
+        try:
+            await coro_factory()
+            log.info(f"[{name}] ⚠ akış istisnasız bitti (beklenmedik) — yeniden abone olunuyor")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.info(f"[{name}] ⚠ akış HATA verdi: {e!r} — {config.FC_RECONNECT_INTERVAL_SEC}s "
+                     f"sonra yeniden abone olunacak (video ve diğer görevler ETKİLENMEDİ)")
+        await asyncio.sleep(config.FC_RECONNECT_INTERVAL_SEC)
+
+
+async def guarded_mission_task(drone, queue):
+    """mission_task'ı main.py'deki asyncio.gather'dan İZOLE eder — genel
+    gerekçe için bkz. resilient_stream docstring'i. mission_task DURUM
+    TAŞIDIĞINDAN (release_points, kilitli hedefler) resilient_stream gibi
+    sıfırdan YENİDEN BAŞLATILMAZ: bir istisna burada sadece loglanıp YUTULUR,
+    görev sonlanır — diğer tüm görevler (video dahil) etkilenmeden sürer.
+    build_and_start_drop_mission zaten çalışıp drop_trigger_task'ı ayrı bir
+    asyncio.create_task olarak başlattıysa (bkz. mission_task'ın sonu), o
+    görev bu sarmalayıcıdan tamamen bağımsız kendi başına sürmeye devam eder.
+    """
+    try:
+        await mission_task(drone, queue)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.info(f"[MISSION] ⚠ mission_task beklenmedik İSTİSNA ile sonlandı: {e!r} — "
+                 f"diğer görevler (video dahil) etkilenmeden sürüyor; FC ile ilgiliyse "
+                 f"o anki misyon adımı (ör. mission upload/servo) yarım kalmış olabilir, "
+                 f"loglara ve FC'nin kendi misyon durumuna bakın")
+
+
 # ==================== TELEMETRİ ====================
 
 async def telemetry_task(drone):
@@ -390,6 +459,11 @@ async def drop_trigger_task(drone, release_points, landing_start_seq=None):
                 wind_n=wind_n, wind_e=wind_e,
             )
             dist = geo.haversine(pos.latitude_deg, pos.longitude_deg, release_lat, release_lon)
+            # HUD'da KILIT satırının yanında canlı gösterilir (2026-09-05,
+            # bkz. state.drop_distance) — kurulma eşiğinden ÖNCE de, armed
+            # olur olmaz da güncellenir; kullanıcı mesafenin azalışını
+            # "SERVO AÇILDI" anıyla aynı ekranda karşılaştırabilsin diye.
+            state.drop_distance[rp["color"]] = dist
 
             if not rp["armed"]:
                 if dist < config.DROP_TRIGGER_RADIUS_M:
@@ -484,6 +558,14 @@ def _make_servo_command(servo_no, pwm):
 # gönderen görev) kaldırıldı — hız yönetimi kod tarafının işi değil, uçak
 # kendi (GCS/FC'de ayarlı) hızında uçar. Kod tarafı yalnızca WP koyar ve
 # doğru anda servo tetikler (bkz. drop_trigger_task).
+
+# build_and_start_drop_mission() yeni misyonu HER ZAMAN aynı sırayla kurar:
+# [home_item, return_item, drop_item(ler)i, ...] — yani drop bloğu HER ZAMAN
+# seq 2'den başlar (bkz. build_and_start_drop_mission _drop_seq_offset).
+# mission_task bu sabiti, henüz yeni misyon yüklenmeden ÖNCE bir hedef
+# kilitlenir kilitlenmez o hedefin YENİ plandaki WP numarasını HUD için
+# TAHMİN ETMEK üzere kullanır (bkz. mission_task, state.locked_target_wp).
+_DROP_BLOCK_START_SEQ = 2  # len([home_item, return_item])
 
 def _make_mission_item(seq, command, param1=0.0, param2=0.0, param3=0.0, param4=0.0,
                        lat=0.0, lon=0.0, alt=0.0, frame=2):
@@ -691,7 +773,7 @@ async def build_and_start_drop_mission(drone, release_points):
     # (2026-08-26) bu değere göre hesaplanıyor; item'lar new_mission'a
     # eklenmeden ÖNCE biliniyor olması gerekiyor çünkü DO_JUMP param1 bu
     # index'i taşıyor.
-    _drop_seq_offset = len([home_item, return_item])
+    _drop_seq_offset = _DROP_BLOCK_START_SEQ
     # DO_JUMP hedefi (2026-08-27): 2+ hedefte bloğun BAŞINA (_drop_seq_offset,
     # ilk drop öğesi) atlamak sorun değil — uçak mavi→kırmızı sırasıyla baştan
     # düzgün bir yaklaşma bacağı katediyor. TEK hedefte ise bloğun başı ZATEN
@@ -733,16 +815,15 @@ async def build_and_start_drop_mission(drone, release_points):
           f"(1 home + 1 dönüş + {len(drop_items)} drop + {len(jump_items)} do_jump + "
           f"{len(landing_items)} iniş)")
 
-    # HUD'daki "kilit anı WP sırası" düzeltmesi (2026-08-26): state.locked_target_wp
-    # o hedef ilk kilitlendiğinde ESKİ (tarama) misyonunun WP index'iyle
-    # dolduruluyordu (bkz. mission_task). O index burada yüklenen YENİ misyonda
-    # anlamsız/saçma — tarama misyonu çok daha uzun/farklı numaralıyken, yeni
-    # misyon 0=home, 1=dönüş, 2..=drop öğeleri şeklinde baştan numaralanıyor.
-    # Uçak artık bu YENİ planı izleyeceğinden, HUD'da görünen WP numarası da
-    # hedefin BU plandaki drop öğesinin seq'i olmalı — drop_items sırası
+    # HUD'daki hedef WP numarasını TEYİT eder (2026-08-26, güncelleme 2026-09-05):
+    # mission_task artık kilit ANINDA aynı formülle (_DROP_BLOCK_START_SEQ +
+    # release_points sırası) TAHMİN yazıyor, bu yüzden burada normalde
+    # değişiklik olmaz — ama tek doğruluk kaynağı burası: drop_items sırası
     # release_points sırasıyla birebir aynı (bkz. _build_drop_items), offset
-    # [home_item, return_item] uzunluğu kadar (2, _drop_seq_offset yukarıda
-    # DO_JUMP hedefi için zaten hesaplandı).
+    # [home_item, return_item] uzunluğu kadar (_DROP_BLOCK_START_SEQ). Bu
+    # satır, formül ileride burada değişip mission_task'takiyle senkron
+    # kalmazsa HUD'un yine de FİİLEN yüklenen misyona göre doğru numarayı
+    # göstermesini garantiler.
     for i, rp in enumerate(release_points):
         state.locked_target_wp[rp["color"]] = _drop_seq_offset + i
     log.info(f"[MISSION] Kilitli hedef WP numaraları yeni plana göre güncellendi: "
@@ -893,10 +974,20 @@ async def mission_task(drone, queue):
         # bağımsız, hedef kadrajdan çıksa/tracker kaybolsa bile burada kalır
         # (2026-08-20, bkz. state.locked_targets, vision.py overlay).
         state.locked_targets[color] = (target["lat"], target["lon"])
-        # Kilit anındaki WP sırası da ayrıca saklanır (2026-08-21) — "bu hedef
-        # kaçıncı WP'ye denk geliyordu" HUD'dan görülebilsin diye (bkz.
-        # state.locked_target_wp).
-        state.locked_target_wp[color] = state.current_wp["index"]
+        # Bu hedefin YENİ (drop) plandaki WP numarası — kilit ANINDA TAHMİN
+        # EDİLİR (2026-09-05 düzeltmesi): eskiden burada state.current_wp["index"]
+        # (o an içinde bulunulan ESKİ/tarama misyonunun WP'si) yazılıyordu —
+        # HUD, yeni misyon fiilen yüklenene kadar (genelde ikinci hedef de
+        # kilitlenip tarama bitene dek, yani uçuşun BÜYÜK kısmında) YANLIŞ/
+        # anlamsız bir WP numarası gösteriyordu. Drop bloğu HER ZAMAN
+        # _DROP_BLOCK_START_SEQ'ten başlayıp release_points sırasıyla birebir
+        # numaralandığından (bkz. _build_drop_items, build_and_start_drop_mission
+        # _drop_seq_offset döngüsü), bu hedefin nihai WP'si release_points'teki
+        # kendi sırasından (yukarıdaki append SONRASI son eleman) baştan bilinir
+        # — mission build'ini beklemeye gerek yok. build_and_start_drop_mission
+        # yeni misyonu yüklerken bu değeri yine de aynı formülle TEYİDEN yazar
+        # (bkz. orada) — ikisi her zaman aynı sonucu verir.
+        state.locked_target_wp[color] = _DROP_BLOCK_START_SEQ + len(release_points) - 1
 
         log.info(f"[MISSION] ✓ {color.upper()} hedef konumu kaydedildi: "
               f"({target['lat']:.6f},{target['lon']:.6f}) — "

@@ -785,25 +785,37 @@ def opencv_processing_thread(queue):
                     _hud_text(stream_frame, f"RED: {reason}", (pos[0], pos[1] + 20),
                               0.45, (0, 165, 255), thickness=1)
 
-            # Kilitlenen hedefler (KALICI GPS + kilit anındaki WP sırası,
-            # 2026-08-20/21) + gönderilen servo komutları ("SERVO AÇILDI") —
-            # ekranın ALT-SOL köşesinde, SABİT pozisyonlarda tek blok halinde
-            # (üstteki FPS/ALT/POS/WP/FC/RF bloğuyla ve sağ üstteki MAVI/KIRMIZI
-            # OK göstergesiyle çakışmasın diye; ayrıca satırlar renk bazında
-            # SABİT yerde kalsın ki bir olay gelip geçtikçe diğer satırlar yer
+            # Kilitlenen hedefler (KALICI GPS + YENİ (drop) plandaki WP numarası
+            # + canlı bırakma mesafesi, 2026-08-20/21, güncelleme 2026-09-05) +
+            # gönderilen servo komutları ("SERVO AÇILDI") — ekranın ALT-SOL
+            # köşesinde, SABİT pozisyonlarda tek blok halinde (üstteki
+            # FPS/ALT/POS/WP/FC/RF bloğuyla ve sağ üstteki MAVI/KIRMIZI OK
+            # göstergesiyle çakışmasın diye; ayrıca satırlar renk bazında SABİT
+            # yerde kalsın ki bir olay gelip geçtikçe diğer satırlar yer
             # değiştirmesin).
             # detected_targets'tan farkı: locked/servo canlı tespitten
             # bağımsız — hedef kadrajdan çıksa/tracker kaybolsa da kalır
-            # (bkz. state.locked_targets/locked_target_wp/servo_events, mission.py).
-            # WP sırası "WP?" gösterir eğer henüz current_wp["index"] set
-            # edilmeden kilitlendiyse (kuramsal, WP takibi mission başında
-            # başlar) — sessizce None basmak yerine bunu görünür kılmak için.
+            # (bkz. state.locked_targets/locked_target_wp/drop_distance/
+            # servo_events, mission.py).
+            # WP numarası "WP?" gösterir eğer (kuramsal) henüz release_points'e
+            # hiç eklenmemişken buraya girildiyse; MESAFE ise mission henüz
+            # yüklenip drop_trigger_task o hedefi değerlendirmeye başlamadıysa
+            # "?" gösterir — sessizce None basmak yerine bunu görünür kılmak için.
+            # Mesafe metni (2026-09-05): drop_trigger_task'ın canlı hesapladığı
+            # bırakma noktasına anlık mesafe (bkz. state.drop_distance) — mission
+            # henüz yüklenmediyse/bu hedefin sırası gelmediyse None, "?" basılır.
+            def _dist_str(color):
+                d = state.drop_distance[color]
+                return f"{d:.0f}m" if d is not None else "?"
+
             _hud_slots = (
                 ("mavi",    state.locked_targets["mavi"],
-                 lambda lat, lon, wp: f"MAVI KILIT: WP{wp if wp is not None else '?'} {lat:.6f},{lon:.6f}",
+                 lambda lat, lon, wp: f"MAVI KILIT: WP{wp if wp is not None else '?'} "
+                                       f"{lat:.6f},{lon:.6f} | MESAFE:{_dist_str('mavi')}",
                  (255, 100, 0), config.HEIGHT - 140),
                 ("kirmizi", state.locked_targets["kirmizi"],
-                 lambda lat, lon, wp: f"KIRMIZI KILIT: WP{wp if wp is not None else '?'} {lat:.6f},{lon:.6f}",
+                 lambda lat, lon, wp: f"KIRMIZI KILIT: WP{wp if wp is not None else '?'} "
+                                       f"{lat:.6f},{lon:.6f} | MESAFE:{_dist_str('kirmizi')}",
                  (0, 0, 255), config.HEIGHT - 108),
             )
             # KILIT/SERVO satırları (2026-08-26): geri kalan HUD'dan (SIMPLEX
@@ -813,7 +825,12 @@ def opencv_processing_thread(queue):
             # bu iki satır uçuş sonrası en çok referans verilen bilgi olduğu
             # için ayrıca büyütüldü. En uzun olası metin (WP40, 2 haneli
             # servo kanalı) 640px genişliğe hâlâ rahat sığıyor (ölçüldü:
-            # ~560px < WIDTH).
+            # ~560px < WIDTH). KILIT satırına eklenen "| MESAFE:XXXm" (2026-09-05)
+            # tipik durumda (mesafe tek/çift haneye düştüğünde, yani drop anına
+            # yaklaşırken — HUD'un asıl amaçladığı an) birkaç karakter — üç
+            # haneli (~987m) mesafede bile toplam ~600px'i geçmiyor, marj dar
+            # ama yeterli; anormal (4+ haneli) bir mesafe kozmetik taşmaya yol
+            # açabilir, işlevsel bir risk değil.
             _LOCK_SCALE = 0.6
 
             for color, locked, fmt, box_color, y in _hud_slots:
@@ -830,6 +847,17 @@ def opencv_processing_thread(queue):
                     _hud_text(stream_frame,
                               f"SERVO ACILDI: {color.upper()} kanal={ev['channel']} @ {lat_str},{lon_str}",
                               (10, y), _LOCK_SCALE, (0, 255, 0))
+
+            # Uçak hızı (2026-09-05) — SAĞ-ALT köşede küçük, geri kalan HUD'dan
+            # bağımsız (tek başına referans bilgisi, başka bir satırla
+            # karışmasın diye ayrı köşede). current_telemetry'den doğrudan
+            # okunur (RUZGAR satırı gibi — frame anına eşlenmesi gerekmeyen,
+            # sürekli akan bir değer).
+            with state.telemetry_lock:
+                speed = state.current_telemetry["speed"]
+            if speed is not None:
+                _hud_text(stream_frame, f"HIZ: {speed:.1f}m/s",
+                          (config.WIDTH - 120, config.HEIGHT - 15), 0.5, (255, 255, 255), thickness=1)
 
             # Adım 2: yayına giden kareyi STREAM_FPS'e seyrelt (tespit üstteki
             # işleme zaten FPS=30'da tam hızda yapıldı, bu sadece encode'a
