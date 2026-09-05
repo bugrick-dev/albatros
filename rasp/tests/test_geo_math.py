@@ -28,6 +28,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 import geo
 
+# 2026-09-05 (yarış öncesi inceleme): pixel_to_gps 2026-08-24'te eklenen
+# GEOFENCE_POLYGON reddini de uyguluyor (bkz. geo.py, config.py) — bu dosyadaki
+# geometri testleri hâlâ eski (0.0, 0.0) drone konumunu kullanıyordu, bu konum
+# gerçek (İstanbul'daki) poligonun ÇOK dışında olduğundan hesaplanan HER hedef
+# GPS'i geofence'e takılıp reddediliyor, testler kalibrasyon/geometriyle değil
+# TAMAMEN alakasız bir sebeple (geofence) başarısız oluyordu — hatta ilk
+# başarısızlık (TypeError, AssertionError DEĞİL) __main__ koşucusunun
+# yakalamadığı bir istisna olduğundan sondaki testler HİÇ ÇALIŞMIYORDU.
+#
+# Düzeltme denemesi #1 (terk edildi): drone'u poligonun centroid'ine taşımak.
+# İşe yaramadı — gerçek poligon çok küçük (~100-120m), 60m'lik bir "atış"
+# centroid'den bile poligonun kenarını aşabiliyor (denendi, doğrulandı).
+# Bu dosyanın amacı GEOFENCE'i değil KAMERA/ATTITUDE GEOMETRİSİNİ test etmek
+# — bu yüzden o testler için geofence'i GEÇİCİ OLARAK devre dışı bırakıyoruz
+# (ayrı, gerçek poligonla çalışan özel bir geofence testi de aşağıda var).
+class _no_geofence:
+    """`with` bloğu boyunca config.GEOFENCE_POLYGON'u devre dışı bırakır —
+    saf kamera/attitude geometrisi testleri geofence reddiyle karışmasın."""
+    def __enter__(self):
+        self._saved = config.GEOFENCE_POLYGON
+        config.GEOFENCE_POLYGON = []
+
+    def __exit__(self, *exc_info):
+        config.GEOFENCE_POLYGON = self._saved
+
 
 def _dist_m(lat0, lon0, lat1, lon1):
     return geo.haversine(lat0, lon0, lat1, lon1)
@@ -53,8 +78,11 @@ def test_center_pixel_matches_camera_pitch_geometry():
         boresight_cx, boresight_cy = config.CAMERA_CX, config.CAMERA_CY
     else:
         boresight_cx, boresight_cy = config.WIDTH / 2, config.HEIGHT / 2
-    lat, lon = geo.pixel_to_gps(0.0, 0.0, alt, 0.0, 0.0, 0.0,
-                                 boresight_cx, boresight_cy)
+    with _no_geofence():
+        result = geo.pixel_to_gps(0.0, 0.0, alt, 0.0, 0.0, 0.0,
+                                   boresight_cx, boresight_cy)
+    assert result is not None, "beklenen hedef reddedildi — pixel_to_gps None döndü"
+    lat, lon = result
     expected_dist = alt / math.tan(math.radians(config.CAMERA_PITCH))
     got_dist = _dist_m(0.0, 0.0, lat, lon)
     assert abs(got_dist - expected_dist) < 0.5, (
@@ -97,10 +125,12 @@ def test_pitch_limit_rejects_beyond_threshold():
 
 def test_pitch_within_threshold_is_accepted():
     under = config.MAX_PITCH_FOR_DETECTION_DEG - 5.0
-    result = geo.pixel_to_gps(0.0, 0.0, 60.0, 0.0, 0.0, under,
-                               config.WIDTH / 2, config.HEIGHT / 2)
+    with _no_geofence():
+        result = geo.pixel_to_gps(0.0, 0.0, 60.0, 0.0, 0.0, under,
+                                   config.WIDTH / 2, config.HEIGHT / 2)
     assert result is not None, (
-        "MAX_PITCH_FOR_DETECTION_DEG sınırı içindeki pitch yanlışlıkla reddedildi"
+        "MAX_PITCH_FOR_DETECTION_DEG sınırı içindeki pitch yanlışlıkla reddedildi "
+        f"(last_reject_reason={geo.last_reject_reason!r})"
     )
 
 
@@ -122,7 +152,8 @@ def test_computed_distance_never_exceeds_configured_max():
     for cy in range(0, config.HEIGHT, 20):
         for cx in range(0, config.WIDTH, 40):
             for pitch in (-10.0, 0.0, 10.0):
-                result = geo.pixel_to_gps(0.0, 0.0, alt, 0.0, 0.0, pitch, cx, cy)
+                with _no_geofence():
+                    result = geo.pixel_to_gps(0.0, 0.0, alt, 0.0, 0.0, pitch, cx, cy)
                 if result is None:
                     continue
                 checked_any = True
@@ -133,6 +164,20 @@ def test_computed_distance_never_exceeds_configured_max():
                     f"{config.MAX_DETECTION_DISTANCE_M}m"
                 )
     assert checked_any, "Hiçbir kombinasyon kabul edilmedi — test anlamsız kaldı"
+
+
+def test_geofence_rejects_target_outside_polygon():
+    """GEOFENCE_POLYGON reddi (2026-08-24, bkz. config.py/geo.py) — daha
+    önce bu dosyada HİÇ test edilmiyordu. Ekvator/Greenwich'teki (0,0) bir
+    drone, gerçek (İstanbul'daki) poligondan hesaplanamayacak kadar uzak
+    kalır — boresight/60m irtifa MAX_DETECTION_DISTANCE_M'yi (200m) aşmadığı
+    için tek ret sebebi geofence olmalı (last_reject_reason bunu doğrular)."""
+    result = geo.pixel_to_gps(0.0, 0.0, 60.0, 0.0, 0.0, 0.0,
+                               config.WIDTH / 2, config.HEIGHT / 2)
+    assert result is None, "Poligonun tamamen dışındaki hedef reddedilmedi"
+    assert geo.last_reject_reason == "GEOFENCE DISI", (
+        f"Ret sebebi geofence değil: {geo.last_reject_reason!r}"
+    )
 
 
 def test_bearing_deg_cardinal_directions():

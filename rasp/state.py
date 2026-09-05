@@ -54,11 +54,27 @@ def nearest_telemetry_at(ts):
     (saniye) — hem loglama hem de TELEMETRY_MATCH_MAX_AGE_S reddi için
     (bkz. vision.py). abs() şart: eşleşen örnek frame'den SONRA da gelmiş
     olabilir, işaretli fark max() içinde yanlış küçük görünürdü (2026-08-17).
+
+    KİLİT (2026-09-05, yarış öncesi inceleme): telemetry_task/attitude_task
+    bu deque'lara telemetry_lock ALTINDA append ediyor (bkz. yukarısı) ama
+    bu fonksiyon (vision.py'nin AYRI OpenCV thread'inden çağrılıyor) eskiden
+    lock'suz min() ile TARIYORDU — CPython'da deque iterasyonu sırasında
+    başka bir thread append/popleft yaparsa "RuntimeError: deque mutated
+    during iteration" fırlatabilir (Python dokümantasyonunda belirtilen
+    davranış). Bu, opencv_processing_thread'i (daemon, gözetimsiz — main.py
+    onu bir daha başlatmaz) SESSİZCE ÖLDÜRÜR: video yayını VE tespit birden
+    durur, sistemin geri kalanı (mission/FC) fark etmeden çalışmaya devam
+    eder. POSITION_STREAM_HZ'nin 10Hz'e çıkarılması (bkz. config.py) append
+    sıklığını artırıp bu YARIŞ PENCERESİNİ DAHA OLASI hale getirdiği için
+    şimdi düzeltildi — okuma da AYNI lock altında yapılıyor (deque'ler
+    maxlen=200, min() taraması mikrosaniyeler sürüyor, lock'u kilitli
+    tutmanın maliyeti ihmal edilebilir).
     """
-    if not position_history or not attitude_history:
-        return None
-    pos = min(position_history, key=lambda e: abs(e[0] - ts))
-    att = min(attitude_history, key=lambda e: abs(e[0] - ts))
+    with telemetry_lock:
+        if not position_history or not attitude_history:
+            return None
+        pos = min(position_history, key=lambda e: abs(e[0] - ts))
+        att = min(attitude_history, key=lambda e: abs(e[0] - ts))
     return {
         "lat": pos[1], "lon": pos[2], "alt": pos[3],
         "yaw": att[1], "roll": att[2], "pitch": att[3],

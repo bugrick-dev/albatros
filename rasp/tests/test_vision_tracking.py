@@ -24,6 +24,18 @@ import config
 import state
 import vision
 
+# 2026-09-05 (yarış öncesi inceleme): bu dosya saf, GPS-değerinden BAĞIMSIZ
+# izleme MANTIĞINI test ediyor (kilit anı, kayıp/köprüleme) — geofence'i
+# DEĞİL. LEVEL_TEL'in sentetik (0,0) konumu, 2026-08-24'te eklenen
+# GEOFENCE_POLYGON'un (gerçek, küçük, İstanbul'daki bir alan) ÇOK dışında
+# kaldığından _update_detection'ın içindeki pixel_to_gps çağrısı HER karede
+# sessizce reddediyordu — tracking[color] hiç dolmuyor, testler yanlış
+# sebeple (geofence, izleme mantığı DEĞİL) başarısız oluyordu. Gerçek
+# geofence davranışı test_geo_math.py'de kendi (gerçek) poligonuyla ayrıca
+# test ediliyor; burada devre dışı bırakmak doğru — bu dosyanın konusu o
+# değil.
+config.GEOFENCE_POLYGON = []
+
 LEVEL_TEL = {"lat": 0.0, "lon": 0.0, "alt": 60.0, "yaw": 0.0, "roll": 0.0, "pitch": 0.0, "speed": 10.0}
 
 

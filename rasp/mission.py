@@ -33,6 +33,20 @@ async def _fc_reconnect_loop(drone):
     Sadece TEK bir döngü aynı anda çalışsın diye state.fc_reconnecting ile
     korunur — art arda gelen connection_state() olayları ikinci bir döngü
     başlatmasın.
+
+    TIMEOUT (2026-09-05, yarış öncesi inceleme): main.py'nin İLK bağlantı
+    döngüsü drone.connect()'i asyncio.wait_for(FC_CONNECT_ATTEMPT_TIMEOUT_SEC)
+    ile sarmalıyor — kendi yorumunda açıkça belirtildiği gibi bu çağrının
+    KENDİSİ bazen hiç dönmüyor (seri port o an yoksa mavsdk_server içeride
+    askıda kalabiliyor, gözlemlenen saha olayı). Bu fonksiyon (uçuş
+    ORTASINDA kopma sonrası yeniden bağlanma) aynı riski taşıdığı hâlde
+    eskiden bu sarmalamaya SAHİP DEĞİLDİ — tam da bu fonksiyonun var olma
+    sebebi olan senaryoda (USB kısa süreli kaybolup geri gelirken tam bu
+    ana denk gelen bir connect() çağrısı) süresiz askıda kalabilir, bu da
+    state.fc_reconnecting'i SONSUZA DEK True'da bırakıp (finally hiç
+    çalışmaz) bir daha HİÇBİR yeniden bağlanma denemesi başlamamasına yol
+    açardı — uçuşun geri kalanında FC'ye bir daha bağlanılamazdı. Artık
+    aynı timeout+wait_for deseni burada da uygulanıyor.
     """
     if state.fc_reconnecting:
         return
@@ -44,7 +58,14 @@ async def _fc_reconnect_loop(drone):
             log.info(f"[FC] Yeniden bağlanma denemesi #{attempt} "
                      f"(serial://{config.FC_PORT}:{config.FC_BAUDRATE})...")
             try:
-                await drone.connect(system_address=f"serial://{config.FC_PORT}:{config.FC_BAUDRATE}")
+                await asyncio.wait_for(
+                    drone.connect(system_address=f"serial://{config.FC_PORT}:{config.FC_BAUDRATE}"),
+                    timeout=config.FC_CONNECT_ATTEMPT_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                log.info(f"[FC] ⚠ Yeniden bağlanma denemesi #{attempt} "
+                         f"{config.FC_CONNECT_ATTEMPT_TIMEOUT_SEC}s içinde dönmedi (askıda kaldı) — "
+                         f"yeni denemeye geçiliyor")
             except Exception as e:
                 log.info(f"[FC] Yeniden bağlanma denemesi HATA: {e}")
             await asyncio.sleep(config.FC_RECONNECT_INTERVAL_SEC)
@@ -543,6 +564,50 @@ async def drop_trigger_task(drone, release_points, landing_start_seq=None):
             break
 
 
+async def _resilient_drop_trigger(drone, release_points, landing_start_seq):
+    """
+    drop_trigger_task'ı build_and_start_drop_mission'ın kendi asyncio.create_task
+    çağrısıyla sarmalar (2026-09-05, yarış öncesi inceleme) — bu görev main.py'nin
+    ana asyncio.gather'ının DIŞINDA, tamamen ayrı ateşlenmiş bir task olduğundan
+    resilient_stream/guarded_mission_task'ın kapsamadığı AYRI bir kırılganlık
+    noktası: drop_trigger_task da diğerleri gibi `async for pos in
+    drone.telemetry.position():` ile bir MAVSDK akışını tüketiyor — FC bağlantısı
+    tam da DROP YAKLAŞMASI SIRASINDA (uçuşun en kritik anı) hıçkırık yaparsa
+    (bkz. resilient_stream docstring — aynı grpc.aio.AioRpcError riski) bu
+    fonksiyon istisna fırlatıp SESSİZCE ölür; onu hiçbir şey izlemediğinden bir
+    daha HİÇBİR hedef için servo tetiklenmez, kalan DO_JUMP retry geçişleri bile
+    boşa gider (kod tarafı artık değerlendirme yapmıyor) — sonuç: yükler hiç
+    bırakılmaz.
+
+    ÇÖZÜM: istisna yakalanır, henüz bırakılmamış hedef varsa kısa bir bekleme
+    sonrası drop_trigger_task YENİDEN başlatılır. rp['dropped'] bayrakları
+    release_points üzerinde (referansla paylaşılan, drop_trigger_task'ın kendi
+    yerel değişkeni DEĞİL) kalıcı olduğundan zaten bırakılmış yükler yeniden
+    TETİKLENMEZ — yalnızca rp['armed']/prev_along (drop_trigger_task'ın kendi
+    başlangıcında sıfırlanıyor) sıfırlanır, bu da o hedefin yeniden KURULMASINI
+    (arming, DROP_TRIGGER_RADIUS_M'ye tekrar girmesi) bir tık geciktirir —
+    yanlış/tekrar bırakmaya yol AÇMAZ. Tüm yükler zaten bırakılmışken (normal
+    tamamlanma, ya da tamamlanma sonrası tesadüfen bir istisna) YENİDEN
+    BAŞLATILMAZ — sonsuz anlamsız yeniden başlatma döngüsüne girilmesin diye.
+    """
+    while not state.shutdown_requested.is_set():
+        try:
+            await drop_trigger_task(drone, release_points, landing_start_seq)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if all(rp["dropped"] for rp in release_points):
+                log.info(f"[DROP] drop_trigger_task istisna ile bitti ama tüm yükler zaten "
+                         f"bırakılmıştı ({e!r}) — yeniden başlatılmıyor")
+                return
+            log.info(f"[DROP] ⚠ drop_trigger_task HATA verdi: {e!r} — "
+                     f"{config.FC_RECONNECT_INTERVAL_SEC}s sonra YENİDEN başlatılacak "
+                     f"(henüz bırakılmamış hedef(ler) var)")
+            await asyncio.sleep(config.FC_RECONNECT_INTERVAL_SEC)
+            continue
+        return  # istisnasız (normal) dönüş — tüm yükler bırakıldı, tekrara gerek yok
+
+
 def _servo_pwm_for(servo_no):
     """
     Her servo kendi güvenli PWM aralığıyla ayrı tanımlı (sahada doğrulandı).
@@ -862,7 +927,7 @@ async def build_and_start_drop_mission(drone, release_points):
     if release_points:
         log.info(f"[MISSION] Canlı balistik drop_trigger_task başlatılıyor "
                  f"(iniş sekansı WP{landing_start_seq}'de, erken bitişte oraya atlanacak)")
-        asyncio.create_task(drop_trigger_task(drone, release_points, landing_start_seq))
+        asyncio.create_task(_resilient_drop_trigger(drone, release_points, landing_start_seq))
     else:
         log.info("[MISSION] Hedef yok — drop_trigger_task başlatılmadı (yalnızca iniş)")
 
