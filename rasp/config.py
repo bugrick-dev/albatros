@@ -373,6 +373,24 @@ if CAMERA_CALIB_PATH.is_file():
         # "belirsiz yönlerde sapma" analizi) — main.py açılışta bunu loglar.
         CAMERA_CALIB_ERROR = repr(e)
 
+# --- Pozisyon telemetri akış hızı (2026-09-05, drop isabeti analizi) ---
+# mission.telemetry_task açılışta GLOBAL_POSITION_INT'i FC'den bu hızda ister
+# (SET_MESSAGE_INTERVAL, WIND'de zaten kullanılan aynı teknik — bkz.
+# mission.wind_track_task/_make_message_interval_command). Bu TEK mesaj hem
+# telemetry.position() hem telemetry.velocity_ned()'i besliyor (ArduPilot'ta
+# ikisi de aynı GLOBAL_POSITION_INT paketinden türetiliyor), yani tek istek
+# ikisini birden hızlandırıyor.
+#
+# NEDEN ÖNEMLİ (drop isabeti): drop_trigger_task her pozisyon tik'inde
+# "release noktasına ulaştık mı" diye bakıyor — tik'ler arasında KÖR.
+# Varsayılan FC akış hızı ölçülmüş ~2-5Hz (tik başına 0.2-0.5s); 15-20m/s
+# uçuşta bu tik başına 3-10m'lik konum sıçraması demek — DROP_ALONG_TRIGGER_S
+# penceresi (aşağıda) yeterince küçük olamıyor çünkü akış zaten seyrek.
+# 10Hz'e çıkarmak tik başı mesafeyi (14m/s'de) ~1.4m'ye indirir, DROP_ALONG_
+# TRIGGER_S'i de orantılı küçültmeyi (aşağıda 0.12s) güvenli kılar.
+POSITION_STREAM_HZ = 10.0
+MAVLINK_MSG_ID_GLOBAL_POSITION_INT = 33   # common.xml GLOBAL_POSITION_INT
+
 # --- Uçuş parametreleri ---
 # DROP_TRIGGER_RADIUS_M artık "tetik" değil "KURMA (arming)" yarıçapı: bu
 # mesafeye girilince canlı drop değerlendirmesi başlar. Fiili bırakma kararı
@@ -383,9 +401,34 @@ if CAMERA_CALIB_PATH.is_file():
 # izin veriyordu.
 DROP_TRIGGER_RADIUS_M      = 20
 # Bırakma anı: release noktasına along-track kalan süre bu değerin altına
-# inince tetiklenir (pozisyon akışı ~2-5Hz → tik başına ~0.2-0.5s; bir tik
+# inince tetiklenir (pozisyon akışı POSITION_STREAM_HZ'de ~0.1s/tik; bir tik
 # sonrasında noktayı geçmiş olmamak için akış periyodundan biraz büyük seçildi).
-DROP_ALONG_TRIGGER_S       = 0.25
+#
+# DÜZELTME (2026-09-05, drop isabeti analizi): bu eşik yapısal olarak HER
+# ZAMAN erken tetikler, hiçbir zaman geç değil — kural "release noktasına
+# kalan süre ≤ bu değerse bırak" (release'i GEÇTİKTEN sonra tetiklenen "passed"
+# dalı yalnızca pencerenin tamamen atlandığı acil durum için). Yani her atış
+# ideal noktadan ORTALAMA (bu değer × hız / 2), EN KÖTÜ (bu değer × hız) kadar
+# ERKEN (hedefe ulaşmadan/kısa) düşüyor — sahada gözlenen ~3.5-4m kısa düşme
+# eski 0.25s × ~14m/s = 3.5m'lik üst sınırla neredeyse birebir örtüşüyor.
+# POSITION_STREAM_HZ 10Hz'e çıkarılınca (üstte) tik periyodu ~0.1s'e indi,
+# bu değer de orantılı küçültüldü (eski 0.25 → 0.12) — kalan sistematik hata
+# (14m/s'de ORTALAMA ~0.84m, EN KÖTÜ ~1.7m) geo.calculate_drop_point'teki
+# ayrı bir sabitle (DROP_TRIGGER_EARLY_BIAS_M) ayrıca telafi ediliyor (bkz.
+# orada) — ikisi FARKLI hatalar: biri akış/tetikleme GRANÜLERLİĞİ, diğeri
+# rüzgar/sürtünme; aynı sabitle karıştırılmamalı.
+DROP_ALONG_TRIGGER_S       = 0.12
+# Tetikleme penceresinin (DROP_ALONG_TRIGGER_S) yapısal olarak HEP erken
+# tetiklemesinin (bkz. yukarıdaki not) ORTALAMA getirdiği erken-bırakma
+# mesafesi: pencere [0, DROP_ALONG_TRIGGER_S] içinde tetiklenir, ortalama
+# konum penceresinin ORTASI (yarısı) — yani ortalama erken-bırakma ≈
+# hız × DROP_ALONG_TRIGGER_S / 2. geo.calculate_drop_point release noktasını
+# bu kadar hedefe YAKLAŞTIRARAK (horizontal_dist'ten düşerek) telafi eder —
+# DROP_RANGE_BIAS_M/rüzgar telafisinden AYRI, çünkü fiziksel kaynağı farklı
+# (hava sürtünmesi değil, kodun kendi tetikleme granülerliği). Hıza göre
+# ÖLÇEKLENMESİ gerektiğinden burada bir MESAFE değil, bir SÜRE (saniye)
+# olarak tutulup calculate_drop_point içinde o anki hızla çarpılıyor.
+DROP_TRIGGER_EARLY_BIAS_S  = DROP_ALONG_TRIGGER_S / 2
 # Release noktasına dik (cross-track) sapma bu değerden büyükse BIRAKMA —
 # şartname isabet ölçümünü hedef merkezinden 20m ile sınırlıyor (dışı 0 puan);
 # 15m cross-track + balistik/rüzgar hatası ~20m bütçesinin içinde kalma çabası.
@@ -525,7 +568,17 @@ SEARCH_TOTAL_TIMEOUT_SEC   = 300
 # (eskiden yalnızca log uyarısı vardı, hesap yine de yapılıyordu) — bayat
 # attitude/pozisyon ile projeksiyon "belirsiz yönlerde" büyük sapmaların ana
 # kaynaklarından (2026-08-17, 277m sapma analizi).
-TELEMETRY_MATCH_MAX_AGE_S  = 0.25
+#
+# DÜZELTME (2026-09-05, drop isabeti analizi): eski 0.25s, 15-20m/s uçuşta
+# tek başına ~3.75-5m'lik hedef-kilidi hatasına izin veriyordu (konum o kadar
+# bayat olabildiği için). POSITION_STREAM_HZ 10Hz'e çıkarılınca (yukarıda)
+# pos_age_s ~0.05s'e düştü, bu yüzden eşik de sıkılaştırıldı. DİKKAT: bu
+# eşik hem pos_age_s HEM att_age_s'e uygulanıyor (bkz. state.nearest_
+# telemetry_at) — attitude_euler() akışının hızını burada AYRICA
+# ARTIRMADIK, mavsdk_server'ın kendi varsayılanına güveniliyor. Sahada
+# reddedilme oranı (vision.py log'undaki bayat-telemetri reddi) artarsa
+# attitude için de benzer bir SET_MESSAGE_INTERVAL isteği eklenmeli.
+TELEMETRY_MATCH_MAX_AGE_S  = 0.10
 # 2026-08-20: drone.connect()'in KENDİSİ bazen hiç dönmüyor (gözlemlenen saha
 # olayı: seri port o an yoksa/USB-CDC ACM cihazı kaybolmuşsa mavsdk_server
 # içeride askıda kalabiliyor) — main.py artık bu çağrıyı da ayrıca bu süreyle

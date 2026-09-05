@@ -141,6 +141,26 @@ async def guarded_mission_task(drone, queue):
 # ==================== TELEMETRİ ====================
 
 async def telemetry_task(drone):
+    """Konum akışı (telemetry.position()) — ayrıca velocity_ned()'i de besleyen
+    AYNI GLOBAL_POSITION_INT paketini FC'den daha sık istiyor (2026-09-05,
+    bkz. config.POSITION_STREAM_HZ): drop_trigger_task'ın along/cross-track
+    tetiklemesi her pozisyon tik'inde bir karar veriyor, tik'ler arası KÖR —
+    varsayılan FC akış hızı (~2-5Hz, ölçülmüş) 15-20m/s uçuşta tik başına
+    3-10m'lik konum sıçraması demekti (bkz. config.DROP_ALONG_TRIGGER_S notu).
+    WIND'de zaten kullanılan SET_MESSAGE_INTERVAL tekniğiyle (bkz.
+    wind_track_task/_make_message_interval_command) aynı isteği burada
+    GLOBAL_POSITION_INT için gönderiyoruz — mavsdk_server bu TEK MAVLink
+    mesajından hem Position hem VelocityNed'i türetiyor, yani tek istek
+    telemetry_task VE speed_track_task'ı birden hızlandırıyor."""
+    try:
+        await drone.mavlink_direct.send_message(_make_message_interval_command(
+            config.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, int(1_000_000 / config.POSITION_STREAM_HZ)))
+        log.info(f"[TELEMETRY] FC'den GLOBAL_POSITION_INT {config.POSITION_STREAM_HZ:.0f}Hz istendi "
+                 f"(SET_MESSAGE_INTERVAL) — drop tetikleme ve speed_track_task'ı da hızlandırır")
+    except Exception as e:
+        log.info(f"[TELEMETRY] ⚠ SET_MESSAGE_INTERVAL gönderilemedi: {e} — "
+                 f"varsayılan akış hızına güveniliyor")
+
     log.info("[TELEMETRY] Konum akışı başlatıldı")
     count = 0
     async for position in drone.telemetry.position():

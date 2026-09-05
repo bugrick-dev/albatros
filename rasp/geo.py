@@ -238,6 +238,12 @@ def calculate_drop_point(target_lat, target_lon, alt, speed_ms, yaw_deg, wind_n=
     (cross) rüzgar bileşeni ise düşüş boyunca yükü rotanın YANINA doğru
     sürüklüyor — eskiden bu eksendeki telafi HİÇ yoktu (yalnızca ileri/geri
     ofset vardı), "sol geri düşme" şikayetinin yanal kısmı bu.
+
+    DROP_TRIGGER_EARLY_BIAS_S (2026-09-05): yukarıdakilerden AYRI bir üçüncü
+    telafi terimi — mission.drop_trigger_task'ın bu fonksiyonun döndürdüğü
+    noktaya yapısal olarak her zaman biraz ERKEN tetiklenmesini (rüzgar/
+    sürtünmeyle ilgisi yok, saf tetikleme granülerliği) telafi eder, bkz.
+    config.DROP_ALONG_TRIGGER_S/DROP_TRIGGER_EARLY_BIAS_S notları.
     """
     log.debug(f"[GEO][calculate_drop_point] Hedef: ({target_lat:.6f},{target_lon:.6f}) "
           f"alt={alt:.1f}m hız={speed_ms:.1f}m/s yaw={yaw_deg:.1f}° "
@@ -263,13 +269,27 @@ def calculate_drop_point(target_lat, target_lon, alt, speed_ms, yaw_deg, wind_n=
     # taban değer) + rüzgara bağlı EK telafi (2026-09-02, config.DROP_WIND_ALONG_GAIN):
     # ters rüzgarda (wind_along < 0) yük daha da erken yavaşlayıp kısa
     # düşer → release noktasını hedefe DAHA da yaklaştır (reduction artar).
+    #
+    # Tetikleme granülerliği telafisi (2026-09-05, DROP_TRIGGER_EARLY_BIAS_S):
+    # yukarıdakilerden TAMAMEN AYRI bir hata kaynağı — hava sürtünmesiyle
+    # ilgisi yok. mission.drop_trigger_task, bu fonksiyonun hesapladığı
+    # release noktasına TAM ulaşınca değil, ona DROP_ALONG_TRIGGER_S kadar
+    # SÜRE kala tetikler (bkz. orada) — yapısal olarak HER ZAMAN erken, hiç
+    # geç değil. Ortalama erken-bırakma mesafesi ≈ hız × (DROP_ALONG_TRIGGER_S/2)
+    # (bkz. config.DROP_TRIGGER_EARLY_BIAS_S tanımı) — burada release noktasını
+    # bu kadar hedefe yaklaştırarak (horizontal_dist'i küçülterek) telafi
+    # ediliyor, tıpkı DROP_RANGE_BIAS_M gibi ama farklı bir fiziksel nedenle.
     # max(0, ...) çok düşük hız/irtifada (horizontal_dist zaten küçükken)
     # negatife düşmesin diye.
-    range_reduction = config.DROP_RANGE_BIAS_M + (-wind_along) * fall_time * config.DROP_WIND_ALONG_GAIN
+    trigger_bias_reduction = config.DROP_TRIGGER_EARLY_BIAS_S * speed_ms
+    range_reduction = (config.DROP_RANGE_BIAS_M
+                        + (-wind_along) * fall_time * config.DROP_WIND_ALONG_GAIN
+                        + trigger_bias_reduction)
     horizontal_dist = max(0.0, horizontal_dist - range_reduction)
     log.debug(f"[GEO][calculate_drop_point] Telafi sonrası yatay kayma="
               f"{horizontal_dist:.2f}m (taban_bias={config.DROP_RANGE_BIAS_M:.1f}m "
-              f"rüzgar_along={wind_along:.1f}m/s → toplam_reduction={range_reduction:.2f}m)")
+              f"rüzgar_along={wind_along:.1f}m/s tetik_bias={trigger_bias_reduction:.2f}m "
+              f"→ toplam_reduction={range_reduction:.2f}m)")
 
     # Yanal (cross) rüzgar telafisi (2026-09-02): rüzgar rotanın SAĞINA
     # doğru esiyorsa (wind_cross > 0) yük düşerken sağa sürüklenir — bunu
