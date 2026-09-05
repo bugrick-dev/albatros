@@ -172,15 +172,22 @@ async def telemetry_task(drone):
     wind_track_task/_make_message_interval_command) aynı isteği burada
     GLOBAL_POSITION_INT için gönderiyoruz — mavsdk_server bu TEK MAVLink
     mesajından hem Position hem VelocityNed'i türetiyor, yani tek istek
-    telemetry_task VE speed_track_task'ı birden hızlandırıyor."""
-    try:
-        await drone.mavlink_direct.send_message(_make_message_interval_command(
-            config.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, int(1_000_000 / config.POSITION_STREAM_HZ)))
-        log.info(f"[TELEMETRY] FC'den GLOBAL_POSITION_INT {config.POSITION_STREAM_HZ:.0f}Hz istendi "
-                 f"(SET_MESSAGE_INTERVAL) — drop tetikleme ve speed_track_task'ı da hızlandırır")
-    except Exception as e:
-        log.info(f"[TELEMETRY] ⚠ SET_MESSAGE_INTERVAL gönderilemedi: {e} — "
-                 f"varsayılan akış hızına güveniliyor")
+    telemetry_task VE speed_track_task'ı birden hızlandırıyor.
+
+    config.POSITION_RATE_BOOST_ENABLED (yarış günü hızlı kapatma bayrağı):
+    False ise bu istek hiç gönderilmez, FC'nin varsayılan akış hızına
+    güvenilir (2026-09-05 öncesi davranış)."""
+    if config.POSITION_RATE_BOOST_ENABLED:
+        try:
+            await drone.mavlink_direct.send_message(_make_message_interval_command(
+                config.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, int(1_000_000 / config.POSITION_STREAM_HZ)))
+            log.info(f"[TELEMETRY] FC'den GLOBAL_POSITION_INT {config.POSITION_STREAM_HZ:.0f}Hz istendi "
+                     f"(SET_MESSAGE_INTERVAL) — drop tetikleme ve speed_track_task'ı da hızlandırır")
+        except Exception as e:
+            log.info(f"[TELEMETRY] ⚠ SET_MESSAGE_INTERVAL gönderilemedi: {e} — "
+                     f"varsayılan akış hızına güveniliyor")
+    else:
+        log.info("[TELEMETRY] POSITION_RATE_BOOST_ENABLED=False — varsayılan akış hızına güveniliyor")
 
     log.info("[TELEMETRY] Konum akışı başlatıldı")
     count = 0
@@ -213,15 +220,21 @@ async def attitude_task(drone):
     max(pos_age_s, att_age_s) aldığından) fiilen ANLAMSIZ kılıyordu — tespit
     aktifken neredeyse her kare "TELEMETRI BAYAT" reddedilecekti. Aynı
     SET_MESSAGE_INTERVAL tekniğiyle (bkz. telemetry_task/wind_track_task)
-    ATTITUDE mesajını da config.ATTITUDE_STREAM_HZ'de istiyoruz."""
-    try:
-        await drone.mavlink_direct.send_message(_make_message_interval_command(
-            config.MAVLINK_MSG_ID_ATTITUDE, int(1_000_000 / config.ATTITUDE_STREAM_HZ)))
-        log.info(f"[ATTITUDE] FC'den ATTITUDE {config.ATTITUDE_STREAM_HZ:.0f}Hz istendi "
-                 f"(SET_MESSAGE_INTERVAL)")
-    except Exception as e:
-        log.info(f"[ATTITUDE] ⚠ SET_MESSAGE_INTERVAL gönderilemedi: {e} — "
-                 f"varsayılan akış hızına güveniliyor")
+    ATTITUDE mesajını da config.ATTITUDE_STREAM_HZ'de istiyoruz.
+
+    config.POSITION_RATE_BOOST_ENABLED (yarış günü hızlı kapatma bayrağı) —
+    telemetry_task ile AYNI bayrak, iki hızlandırma da tek yerden aç/kapa."""
+    if config.POSITION_RATE_BOOST_ENABLED:
+        try:
+            await drone.mavlink_direct.send_message(_make_message_interval_command(
+                config.MAVLINK_MSG_ID_ATTITUDE, int(1_000_000 / config.ATTITUDE_STREAM_HZ)))
+            log.info(f"[ATTITUDE] FC'den ATTITUDE {config.ATTITUDE_STREAM_HZ:.0f}Hz istendi "
+                     f"(SET_MESSAGE_INTERVAL)")
+        except Exception as e:
+            log.info(f"[ATTITUDE] ⚠ SET_MESSAGE_INTERVAL gönderilemedi: {e} — "
+                     f"varsayılan akış hızına güveniliyor")
+    else:
+        log.info("[ATTITUDE] POSITION_RATE_BOOST_ENABLED=False — varsayılan akış hızına güveniliyor")
 
     log.info("[ATTITUDE] Yaw/roll/pitch akışı başlatıldı")
     count = 0
@@ -319,11 +332,22 @@ async def wind_track_task(drone):
     YOK SAYILIR ve sabit elle girilen değer kullanılır (saha ölçümü / EKF
     tahmini güvenilmezse; uçuş öncesi GCS rüzgar okumasıyla girilir).
     """
+    # config.WIND_COMPENSATION_ENABLED (2026-09-05, yarış günü hızlı kapatma
+    # bayrağı): False ise WIND mesajı yine OKUNUP loglanır (teşhis için) ama
+    # state.current_telemetry'ye hiç YAZILMAZ — tüketiciler (calculate_drop_
+    # point/wind_shifted_nav_point) zaten None'ı 0.0'a düşüren mevcut
+    # fallback'lerinden geçtiği için rüzgarsız/eski davranışa döner, ekstra
+    # bir kod dalı gerekmez.
+    if not config.WIND_COMPENSATION_ENABLED:
+        log.info("[WIND] ⚠ WIND_COMPENSATION_ENABLED=False — rüzgar OKUNACAK/loglanacak "
+                 "ama drop hesabına YAZILMAYACAK (rüzgarsız davranış)")
+
     if config.WIND_MANUAL_FROM_DEG is not None and config.WIND_MANUAL_SPEED_MS is not None:
         wind_n, wind_e = _wind_from_to_ned(config.WIND_MANUAL_FROM_DEG, config.WIND_MANUAL_SPEED_MS)
-        with state.telemetry_lock:
-            state.current_telemetry["wind_n"] = wind_n
-            state.current_telemetry["wind_e"] = wind_e
+        if config.WIND_COMPENSATION_ENABLED:
+            with state.telemetry_lock:
+                state.current_telemetry["wind_n"] = wind_n
+                state.current_telemetry["wind_e"] = wind_e
         log.info(f"[WIND] ELLE GİRİLEN rüzgar kullanılıyor (FC tahmini yok sayılıyor): "
                  f"{config.WIND_MANUAL_SPEED_MS:.1f}m/s, {config.WIND_MANUAL_FROM_DEG:.0f}°'DEN "
                  f"→ wind_n={wind_n:+.1f} wind_e={wind_e:+.1f} m/s")
@@ -372,9 +396,10 @@ async def wind_track_task(drone):
                 continue
 
             wind_n, wind_e = _wind_from_to_ned(direction_from, speed)
-            with state.telemetry_lock:
-                state.current_telemetry["wind_n"] = wind_n
-                state.current_telemetry["wind_e"] = wind_e
+            if config.WIND_COMPENSATION_ENABLED:
+                with state.telemetry_lock:
+                    state.current_telemetry["wind_n"] = wind_n
+                    state.current_telemetry["wind_e"] = wind_e
             stats["count"] += 1
             stats["last_t"] = time.monotonic()
             if stats["count"] == 1:

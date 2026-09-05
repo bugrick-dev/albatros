@@ -221,16 +221,24 @@ def _update_detection(mask, color_key, queue, queued_colors, tel, tracking, fram
         # tespite dayandırıp sürüklenmenin birikmesini önler. Bbox, hedef
         # küçük (yüksek irtifa) olsa bile TRACKER_MIN_PATCH_PX'e padding'lenir
         # — bkz. _pad_bbox_to_min_size notu.
-        x, y, w, h = cv2.boundingRect(cnt)
-        tx, ty, tw, th = _pad_bbox_to_min_size(
-            x, y, w, h, config.TRACKER_MIN_PATCH_PX, config.WIDTH, config.HEIGHT)
-        try:
-            cv_tracker = cv2.legacy.TrackerMOSSE_create()
-            cv_tracker.init(frame, (tx, ty, tw, th))
-        except Exception as e:
-            cv_tracker = None
-            log.debug(f"[VISION] {color_key} MOSSE init hatası: {e}")
-        trackers[color_key] = {"cv": cv_tracker, "bridged": 0}
+        # config.MOSSE_TRACKER_ENABLED (2026-09-05, yarış günü hızlı kapatma
+        # bayrağı): False ise tracker hiç oluşturulmaz — trackers[color_key]
+        # None kalır, aşağıdaki köprüleme dalı (tstate is not None kontrolü)
+        # doğal olarak atlanıp doğrudan eski (köprülemesiz) DETECTION_LOST_
+        # STREAK davranışına düşülür, ayrı bir kod dalı gerekmez.
+        if config.MOSSE_TRACKER_ENABLED:
+            x, y, w, h = cv2.boundingRect(cnt)
+            tx, ty, tw, th = _pad_bbox_to_min_size(
+                x, y, w, h, config.TRACKER_MIN_PATCH_PX, config.WIDTH, config.HEIGHT)
+            try:
+                cv_tracker = cv2.legacy.TrackerMOSSE_create()
+                cv_tracker.init(frame, (tx, ty, tw, th))
+            except Exception as e:
+                cv_tracker = None
+                log.debug(f"[VISION] {color_key} MOSSE init hatası: {e}")
+            trackers[color_key] = {"cv": cv_tracker, "bridged": 0}
+        else:
+            trackers[color_key] = None
 
         # Bayat telemetri reddi (2026-08-17, "277m belirsiz yönde sapma" analizi):
         # frame anına en yakın telemetri örneği bile TELEMETRY_MATCH_MAX_AGE_S'den

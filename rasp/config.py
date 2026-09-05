@@ -8,6 +8,47 @@ from pathlib import Path
 
 import numpy as np
 
+# ==================== ÖZELLİK BAYRAKLARI (2026-09-05, yarış günü hızlı aç/kapa) ====================
+# Sahada bir özellik beklenmedik davranırsa kod içinde arayıp değiştirmek yerine
+# buradan True/False çevirip servisi yeniden başlatmak (sudo systemctl restart
+# albatros.service) yeterli olsun diye. Her biri "False = daha önce test edilmiş/
+# daha basit ESKİ davranışa dön" anlamına gelir — kapatmak asla çökmeye/hataya
+# yol açmaz, yalnızca ilgili iyileştirmeyi geri alır. Aşağıdaki her sabitin asıl
+# tanımı/gerekçesi kendi bölümünde duruyor, burada yalnızca AÇMA/KAPAMA anahtarı.
+
+# False: rüzgar tahmini (FC EKF/WIND mesajı) TAMAMEN yok sayılır — calculate_
+# drop_point/wind_shifted_nav_point hep wind_n=wind_e=0.0 ile çalışır (rüzgarsız
+# davranış, zaten mevcut None-güvenli fallback'in aynısı). wind_track_task WIND
+# mesajını yine de OKUYUP loglamaya devam eder (teşhis için), yalnızca sonucu
+# state.current_telemetry'ye YAZMAZ. Rüzgar tahmini sahada tutarsız/şüpheli
+# çıkarsa (ör. EKF kötü kalibre, WIND mesajı gürültülü) hızlıca kapatılabilir.
+WIND_COMPENSATION_ENABLED = True
+
+# False: telemetry_task/attitude_task açılışta SET_MESSAGE_INTERVAL isteği
+# GÖNDERMEZ, FC'nin kendi varsayılan akış hızına dönülür (2026-09-05 öncesi
+# davranış, ~2-5Hz). Sahadaki FC/firmware bu isteği beklenmedik şekilde
+# karşılarsa (gözlemlenmedi ama ihtimal dışı değil) hızlıca eski davranışa
+# dönmek için.
+POSITION_RATE_BOOST_ENABLED = True
+
+# False: pixel_to_gps hiçbir hedefi "alan dışı" diye reddetmez (GEOFENCE_POLYGON
+# tanımlı kalır ama uygulanmaz). Yarışma alanı sınırları son anda değişir/
+# GEOFENCE_POLYGON köşeleri yanlış girilmiş çıkarsa, doğru hedefleri sessizce
+# reddetmek yerine hızlıca kapatabilmek için.
+GEOFENCE_ENABLED = True
+
+# False: MOSSE kare-köprüleme tamamen devre dışı — bir kare HSV/kontur tespitini
+# kaçırırsa doğrudan DETECTION_LOST_STREAK sayaçına düşülür (köprüleme YOKTU
+# öncesi davranış). MOSSE sahada garip/sürükleyici davranırsa hızlıca kapatmak
+# için.
+MOSSE_TRACKER_ENABLED = True
+
+# False: geo.calculate_drop_point tetikleme-granülerlik telafisini (DROP_
+# TRIGGER_EARLY_BIAS_S × hız) UYGULAMAZ — yalnızca DROP_RANGE_BIAS_M/rüzgar
+# telafisi kalır (2026-09-05 öncesi davranış). Yeni bir kalibrasyon verisiyle
+# bu terimin yanlış yönde etki ettiği görülürse hızlıca kapatmak için.
+DROP_TRIGGER_EARLY_BIAS_ENABLED = True
+
 # --- Video ---
 WIDTH  = 640
 HEIGHT = 480

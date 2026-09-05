@@ -211,7 +211,8 @@ def pixel_to_gps(drone_lat, drone_lon, alt, yaw_deg, roll_deg, pitch_deg, target
     target_lon = drone_lon + (delta_east  / (111320 * math.cos(math.radians(drone_lat))))
     log.debug(f"[GEO][pixel_to_gps] Sonuç: hedef GPS=({target_lat:.6f}, {target_lon:.6f})")
 
-    if config.GEOFENCE_POLYGON and not point_in_polygon(target_lat, target_lon, config.GEOFENCE_POLYGON):
+    if (config.GEOFENCE_ENABLED and config.GEOFENCE_POLYGON
+            and not point_in_polygon(target_lat, target_lon, config.GEOFENCE_POLYGON)):
         log.debug(f"[GEO][pixel_to_gps] ⚠ REDDEDİLDİ: hedef GPS=({target_lat:.6f}, {target_lon:.6f}) "
                  f"GEOFENCE_POLYGON dışında — tespit atlanıyor")
         last_reject_reason = "GEOFENCE DISI"  # HUD ASCII-only (bkz. ROLL/PITCH notu)
@@ -281,7 +282,13 @@ def calculate_drop_point(target_lat, target_lon, alt, speed_ms, yaw_deg, wind_n=
     # ediliyor, tıpkı DROP_RANGE_BIAS_M gibi ama farklı bir fiziksel nedenle.
     # max(0, ...) çok düşük hız/irtifada (horizontal_dist zaten küçükken)
     # negatife düşmesin diye.
-    trigger_bias_reduction = config.DROP_TRIGGER_EARLY_BIAS_S * speed_ms
+    # config.DROP_TRIGGER_EARLY_BIAS_ENABLED (2026-09-05, yarış günü hızlı
+    # kapatma bayrağı): False ise bu terim 0 — yalnızca DROP_RANGE_BIAS_M/
+    # rüzgar telafisi kalır (2026-09-05 öncesi davranış).
+    trigger_bias_reduction = (
+        config.DROP_TRIGGER_EARLY_BIAS_S * speed_ms
+        if config.DROP_TRIGGER_EARLY_BIAS_ENABLED else 0.0
+    )
     range_reduction = (config.DROP_RANGE_BIAS_M
                         + (-wind_along) * fall_time * config.DROP_WIND_ALONG_GAIN
                         + trigger_bias_reduction)
